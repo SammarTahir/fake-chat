@@ -13,6 +13,12 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
+
+// --app: launched by the desktop app (FakeChat.vbs). Chat starts paused until
+// the user clicks Start, and the server exits by itself once the app window
+// has been closed, so no hidden process is ever left running.
+const APP_MODE = process.argv.includes('--app');
 
 let WebSocketServer;
 try { ({ WebSocketServer } = require('ws')); }
@@ -345,6 +351,9 @@ const server = http.createServer(handleHttp);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const overlays = new Set();
 const controls = new Set();
+// when the last control page disconnected (0 = one is connected); app mode
+// exits after a grace period with no window, see the idle watcher at startup
+let appIdleSince = Date.now();
 
 function send(ws, obj) { try { ws.send(JSON.stringify(obj)); } catch (e) { /* ignore */ } }
 function toOverlays(obj) { const s = JSON.stringify(obj); for (const ws of overlays) { try { ws.send(s); } catch (e) {} } }
@@ -368,15 +377,28 @@ function controlInit() {
     config: cfg,
     personas: personas.map((p) => ({ name: p.name, color: p.color, tag: p.tag, badges: p.badges })),
     emotes: emoteNames(),
+    models: state.models,
+    running: state.running,
+    appMode: APP_MODE,
+    port: cfg.port,
+    overlays: overlays.size,
     status: { ollama: state.ollama, model: cfg.ollama.model, viewers: state.viewers },
   };
 }
+function broadcastClients() { toControls({ type: 'clients', overlays: overlays.size }); }
 
 wss.on('connection', (ws, req) => {
   const role = /role=control/.test(req.url || '') ? 'control' : 'overlay';
   (role === 'control' ? controls : overlays).add(ws);
   send(ws, role === 'control' ? controlInit() : overlayInit());
-  ws.on('close', () => { overlays.delete(ws); controls.delete(ws); });
+  if (role === 'overlay') broadcastClients();
+  else { appIdleSince = 0; refreshModels(); }
+  ws.on('close', () => {
+    overlays.delete(ws);
+    controls.delete(ws);
+    if (role === 'overlay') broadcastClients();
+    else if (controls.size === 0) appIdleSince = Date.now();
+  });
   ws.on('error', () => {});
   ws.on('message', (buf) => {
     let m;
@@ -405,7 +427,11 @@ function handleControlMsg(m) {
       state.reactiveQueue.length = 0;
       state.train = null;
       break;
+    case 'run': setRunning(!!m.on); break;
+    case 'models': refreshModels(); break;
+    case 'quit': shutdown('quit from app'); break;
     case 'set': {
+      const prevModel = cfg.ollama.model;
       cfg = deepMerge(cfg, m.patch || {});
       if (m.patch && m.patch.viewers && typeof m.patch.viewers.start === 'number') {
         state.viewers = m.patch.viewers.start;
@@ -413,9 +439,66 @@ function handleControlMsg(m) {
       }
       saveConfig();
       applyRuntimeConfig();
+      if (cfg.ollama.model !== prevModel) switchModel(prevModel);
       break;
     }
   }
+}
+
+function setRunning(on) {
+  if (state.running === on) return;
+  state.running = on;
+  if (!on) {
+    toOverlays({ type: 'clear' });
+    state.reactiveQueue.length = 0;
+    state.train = null;
+    state.transcript.length = 0;
+  }
+  console.log(`[chat] ${on ? 'started' : 'stopped'}`);
+  toControls({ type: 'run', on });
+}
+
+// free the old model's VRAM right away instead of after keep_alive expires —
+// two 3-4B models resident at once is a real squeeze on an 8 GB card
+function switchModel(prevModel) {
+  unloadModel(prevModel);
+  state.reactiveQueue.length = 0;
+  // a warm-up in flight notices the switch when it finishes and restarts itself
+  if (state.ollama === 'loading') return;
+  setOllama('unknown');
+  checkOllama();
+}
+function unloadModel(model) {
+  return fetch(cfg.ollama.url + '/api/generate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    signal: AbortSignal.timeout(3000),
+    body: JSON.stringify({ model, keep_alive: 0 }),
+  }).catch(() => {});
+}
+
+async function refreshModels() {
+  try {
+    const res = await fetch(cfg.ollama.url + '/api/tags', { signal: AbortSignal.timeout(3000) });
+    const data = await res.json();
+    state.models = (data.models || [])
+      .filter((m) => !/embed/i.test(m.name))
+      .map((m) => ({ name: m.name, size: m.size }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch (e) { /* Ollama down: keep the last known list */ }
+  toControls({ type: 'models', models: state.models });
+}
+
+let shuttingDown = false;
+async function shutdown(reason) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[app] shutting down (${reason})`);
+  state.running = false;
+  toOverlays({ type: 'clear' });
+  toControls({ type: 'bye' });
+  await unloadModel(cfg.ollama.model); // hand the VRAM back to games
+  setTimeout(() => process.exit(0), 200);
 }
 
 // ================================================================ state
@@ -428,8 +511,10 @@ const state = {
   lastChatters: [],         // recent authors for @replies
   online: [],               // names that "joined" (for leave events)
   slowUntil: 0,
-  ollama: 'unknown',        // ready | missing | down
+  ollama: 'unknown',        // unknown | down | missing | loading | ready
   llmBusy: false,
+  running: !APP_MODE,       // chat on/off (Start/Stop in the app)
+  models: [],               // installed Ollama models [{name, size}]
 };
 
 // ================================================================ message factory
@@ -451,6 +536,9 @@ function capWords(text) {
 }
 let msgSeq = 0;
 function sendChat(p, text, opts = {}) {
+  // single choke point: triggers, echoes and joiner greetings scheduled
+  // before a Stop all land here and are dropped
+  if (!state.running) return;
   let t = capWords(text);
   if (!opts.skipMutate) t = mutateText(t);
   const parts = buildParts(t);
@@ -471,6 +559,7 @@ function sendChat(p, text, opts = {}) {
   }
 }
 function sendSystem(text) {
+  if (!state.running) return;
   toOverlays({ type: 'system', text });
   toControls({ type: 'feed_sys', text });
 }
@@ -508,7 +597,7 @@ function ambientTick() {
   setTimeout(ambientTick, nextGap());
 }
 function produceMessage() {
-  if (overlays.size === 0 && controls.size === 0) return; // nobody watching
+  if (!state.running || (overlays.size === 0 && controls.size === 0)) return; // stopped / nobody watching
   // 1. emote train in progress
   if (state.train) {
     const tr = state.train;
@@ -580,7 +669,7 @@ function scheduleEchoes(srcPersona, text) {
 // ================================================================ join / leave
 function joinTick() {
   try {
-    if (overlays.size || controls.size) {
+    if (state.running && (overlays.size || controls.size)) {
       if (chance(0.6)) {
         // join — roster persona or one-off name
         const name = chance(0.6) ? pickPersona().name : makeHandle();
@@ -610,7 +699,7 @@ let viewerTimer = null;
 function startViewerTimer() {
   if (viewerTimer) clearInterval(viewerTimer);
   viewerTimer = setInterval(() => {
-    if (!cfg.viewers.enabled) return;
+    if (!cfg.viewers.enabled || !state.running) return;
     const v = cfg.viewers;
     let n = state.viewers + randInt(-v.driftPerTick, v.driftPerTick);
     // gentle mean reversion toward the configured start value so the count
@@ -664,7 +753,15 @@ function runTrigger(kind) {
 }
 
 // ================================================================ Ollama reactive layer
+function setOllama(st) {
+  if (state.ollama === st) return;
+  state.ollama = st;
+  toControls({ type: 'status', ollama: st, model: cfg.ollama.model });
+}
+
+let ollamaKickedAt = 0;
 async function checkOllama() {
+  if (state.ollama === 'loading') return; // a warm-up is already in flight
   try {
     const res = await fetch(cfg.ollama.url + '/api/tags', { signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error('http ' + res.status);
@@ -672,36 +769,57 @@ async function checkOllama() {
     const models = (data.models || []).map((m) => m.name);
     const want = cfg.ollama.model;
     const ok = models.some((n) => n === want || n === want + ':latest' || n.split(':')[0] === want.split(':')[0]);
-    const prev = state.ollama;
-    state.ollama = ok ? 'ready' : 'missing';
-    if (state.ollama !== prev) {
-      if (state.ollama === 'missing') {
+    if (!ok) {
+      if (state.ollama !== 'missing') {
         console.log(`[ollama] model "${want}" is not pulled. Run:\n\n    ollama pull ${want}\n\n  Running in ambient-only mode until then.`);
-      } else {
-        console.log(`[ollama] model "${want}" ready — reactive layer enabled`);
-        warmModel(); // preload into VRAM so real cycles fit inside timeoutMs
       }
-      toControls({ type: 'status', ollama: state.ollama, model: cfg.ollama.model });
+      setOllama('missing');
+      return;
+    }
+    if (state.ollama !== 'ready') {
+      // preload into VRAM before enabling the reactive layer, so the first
+      // real cycles fit inside timeoutMs instead of timing out on a cold load
+      setOllama('loading');
+      const loaded = await warmModel();
+      if (want !== cfg.ollama.model) { // model switched while this one loaded
+        unloadModel(want);
+        state.ollama = 'unknown';
+        return checkOllama();
+      }
+      setOllama(loaded ? 'ready' : 'down');
+      if (loaded) console.log(`[ollama] model "${want}" ready — reactive layer enabled`);
     }
   } catch (e) {
-    if (state.ollama !== 'down') {
-      console.log('[ollama] not reachable at ' + cfg.ollama.url + ' — ambient-only mode');
-      toControls({ type: 'status', ollama: 'down', model: cfg.ollama.model });
-    }
-    state.ollama = 'down';
+    if (state.ollama !== 'down') console.log('[ollama] not reachable at ' + cfg.ollama.url + ' — ambient-only mode');
+    setOllama('down');
+    kickOllama();
   }
+}
+
+// Ollama's desktop app often isn't running (it doesn't start with Windows by
+// default). Any `ollama` CLI call starts it, so do that once, then recheck.
+function kickOllama() {
+  if (Date.now() - ollamaKickedAt < 60000) return;
+  ollamaKickedAt = Date.now();
+  try {
+    spawn('ollama', ['list'], { windowsHide: true, stdio: 'ignore', detached: true })
+      .on('error', () => {})
+      .unref();
+    console.log('[ollama] starting Ollama...');
+    for (const d of [4000, 9000, 16000, 30000]) setTimeout(checkOllama, d);
+  } catch (e) { /* not installed: stay in ambient-only mode */ }
 }
 
 async function warmModel() {
   try {
-    await fetch(cfg.ollama.url + '/api/generate', {
+    const res = await fetch(cfg.ollama.url + '/api/generate', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       signal: AbortSignal.timeout(120000),
       body: JSON.stringify({ model: cfg.ollama.model, prompt: '', keep_alive: '30m' }),
     });
-    console.log('[ollama] model warmed');
-  } catch (e) { /* warm-up is best-effort */ }
+    return res.ok;
+  } catch (e) { return false; }
 }
 
 function llmSystemPrompt() {
@@ -774,7 +892,7 @@ function reactiveCycle() {
   setTimeout(llmCallOnce, Math.max(2, cfg.ollama.reactiveIntervalSec / 2) * 1000);
 }
 async function llmCallOnce() {
-  if (state.llmBusy || state.ollama !== 'ready') return;
+  if (!state.running || state.llmBusy || state.ollama !== 'ready') return;
   const windowMs = cfg.ollama.transcriptWindowSec * 1000;
   const now = Date.now();
   const recent = state.transcript.filter((x) => now - x.t < windowMs).map((x) => x.text).join(' ').trim();
@@ -844,7 +962,11 @@ try {
   fs.watch(EMOTES_DIR, () => {
     clearTimeout(emoteRescan);
     emoteRescan = setTimeout(() => {
+      // Windows also fires this when files are merely read, so only act on
+      // real additions/removals
+      const before = emoteNames().join('|');
       scanEmotes();
+      if (emoteNames().join('|') === before) return;
       console.log(`[emotes] rescanned: ${emotes.size} emotes`);
       toControls({ type: 'emotes', emotes: emoteNames() });
     }, 500);
@@ -870,7 +992,9 @@ function serveFile(res, filePath) {
 function handleHttp(req, res) {
   const url = decodeURIComponent((req.url || '/').split('?')[0]);
   if (url === '/' || url === '/overlay') return serveFile(res, path.join(PUBLIC_DIR, 'overlay.html'));
-  if (url === '/control') return serveFile(res, path.join(PUBLIC_DIR, 'control.html'));
+  if (url === '/control' || url === '/app') return serveFile(res, path.join(PUBLIC_DIR, 'control.html'));
+  if (url === '/icon.png') return serveFile(res, path.join(ROOT, 'assets', 'icon.png'));
+  if (url === '/health') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
   if (url.startsWith('/emotes/')) {
     const name = path.basename(url); // no traversal
     return serveFile(res, path.join(EMOTES_DIR, name));
@@ -899,5 +1023,19 @@ server.listen(cfg.port, () => {
   reactiveDripTick();
   joinTick();
   checkOllama();
+  refreshModels();
   setInterval(checkOllama, 60000);
+
+  if (APP_MODE) {
+    console.log('  [app mode] chat starts paused; exits when the app window closes\n');
+    // generous grace while the window first opens (Chrome cold start), then
+    // a short one so a page reload doesn't kill the server
+    let graceMs = 60000;
+    setInterval(() => {
+      if (controls.size === 0 && appIdleSince && Date.now() - appIdleSince > graceMs) shutdown('app window closed');
+      if (controls.size > 0) graceMs = 15000;
+    }, 3000);
+  }
 });
+
+process.on('SIGINT', () => shutdown('ctrl+c'));

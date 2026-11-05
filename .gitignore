@@ -5,6 +5,7 @@ node_modules/
 # personal settings, no accidental sharing of your roster).
 config.json
 personas.json
+logs/
 
 # Emote images are third-party artwork downloaded for local use and are NOT
 # redistributed with this project. `node tools/fetch_emotes.js` populates this

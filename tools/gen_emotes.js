@@ -338,7 +338,7 @@ function ensurePlaceholderEmotes(dir) {
   return written;
 }
 
-module.exports = { ensurePlaceholderEmotes };
+module.exports = { ensurePlaceholderEmotes, encodePNG };
 
 if (require.main === module) {
   const dir = path.join(__dirname, '..', 'emotes');

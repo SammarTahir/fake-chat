@@ -45,9 +45,26 @@ That's it — no build step, no bundler, no framework. On first run it generates
 `personas.json` (60 chatters), a commented `config.json`, and a placeholder
 emote set in `emotes/`.
 
-Windows users can double-click **`start-chat.bat`** instead: it starts Ollama,
-starts the server in its own window, and opens the control page. **`stop-chat.bat`**
-shuts it down.
+### Windows desktop app
+
+Double-click **`Create Desktop Shortcut.bat`** once. From then on, open
+**Fake Chat** from your desktop like any other app:
+
+- It starts everything for you (server and Ollama) with no console windows, and
+  opens a standalone app window — its own taskbar icon, no tabs or address bar.
+- Pick the AI model from the dropdown (lists every model you have in Ollama;
+  switching unloads the old one from your GPU), then press **Start chat** —
+  that also turns the mic on. **Stop chat** pauses everything and clears the
+  overlay.
+- All settings (chat speed, emotes, AI timing, overlay position/size/text size,
+  viewer counter) are in the window and apply to OBS instantly.
+- **Quit**, or just closing the window, shuts the server down and unloads the
+  model from your GPU, so nothing keeps running in the background.
+
+The window is Chrome (or Edge) in app mode underneath, because speech
+recognition only exists in Chromium browsers. Logs go to `logs/server.log`.
+`start-chat.bat` opens the same app; `stop-chat.bat` force-stops the server if
+anything ever gets stuck.
 
 Optional (for the LLM reactive layer):
 
@@ -69,7 +86,7 @@ recent Ollama; if a pull fails with "requires a newer version", update Ollama.
 | URL | Where | What |
 |---|---|---|
 | `http://localhost:8080/overlay` | OBS browser source | The chat renderer. No mic, no LLM, silent if the server dies. |
-| `http://localhost:8080/control` | Chrome, second monitor | Mic capture, transcript, triggers, settings, panic button. |
+| `http://localhost:8080/control` | Chrome, second monitor | The app UI in a normal tab (the desktop app opens this same page as `/app`): start/stop, model, mic, triggers, settings, panic button. |
 | `http://localhost:8080/overlay?demo` | Chrome | Self-contained styling check — fake generator, no server traffic needed. |
 
 ## OBS browser source settings (Twitch_Stream profile, 1080×1920 vertical canvas)
@@ -86,9 +103,9 @@ Add **Browser** source to your vertical scene:
 | **Shutdown source when not visible** | **OFF** — keeps chat history flowing so the column is already full when you switch scenes |
 | **Refresh browser when scene becomes active** | **OFF** — a refresh would visibly wipe the column mid-stream. Use the control page's CLEAR button if you ever need a reset. |
 
-Make the source full-canvas (1080×1920) and **position the chat column via
-`config.json` → `overlay`** (anchor/margin/width/height), not by moving the
-source. That keeps the viewer counter corner and the chat column independently
+Make the source full-canvas (1080×1920) and **position the chat column from
+the app's "Overlay in OBS" settings** (or `config.json` → `overlay`), not by
+moving the source. That keeps the viewer counter corner and the chat column independently
 placeable.
 
 Right-hand column example: `"anchor": "bottom-right", "width": 460, "height": 1250`.
@@ -99,11 +116,11 @@ them natively).
 
 ## Daily flow
 
-1. `node server.js` (keep the terminal open)
-2. Open `http://localhost:8080/control` in Chrome on your second monitor,
-   click **Start mic**, allow mic access once.
-3. Start OBS. Done — ambient chat runs constantly; contextual comments appear
-   a few seconds after you say things.
+1. Open **Fake Chat** from the desktop (or run `node server.js` and open
+   `http://localhost:8080/control` in Chrome).
+2. Press **Start chat** and allow mic access the first time.
+3. Start OBS. Done — background chat runs constantly; contextual comments
+   appear a few seconds after you say things.
 
 Chrome kills continuous speech recognition after ~60s of silence; the control
 page restarts it automatically, forever. The overlay reconnects with backoff if
