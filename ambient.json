@@ -1,0 +1,63 @@
+{
+  "generic": [
+    "lol", "LOL", "lmao", "lmaooo", "W", "gg", "true", "real", "fr", "same",
+    "no way", "no shot", "clip it", "CLIP IT", "wait what", "huh", "bro", "nah", "yep",
+    "this stream is goated", "chat is this real", "we up", "cooking", "locked in",
+    "actually locked in", "crazy", "wild", "insane", "hi chat", "hello everyone", "yo",
+    "sup chat", "whats good", "?", "??", "???", "mods asleep", "based", "valid",
+    "lowkey fire", "banger", "vibes", "chat moving fast", "my wifi is dying",
+    "who else on phone", "phone gang", "back from work", "just got here what i miss",
+    "brb food", "ok back", "this song slaps", "audio is fine", "mic sounds good today",
+    "new mic?", "haircut?", "pog", "icant", "I CANT", "nooo", "noooooo", "YES", "YESSS",
+    "lets gooo", "LETS GOOO", "sheesh", "sheeeesh", "oh no", "oh no no no", "pain",
+    "actual pain", "copium", "we're so back", "it's over", "cooked", "down bad",
+    "rent free", "npc behavior", "certified moment", "clip that mods", "someone clip",
+    "F", "f in chat", "o7", "GG", "ggs", "been here 5 min already lost", "volume kinda low"
+  ],
+  "hype": [
+    "LETS GOOOO", "HUGE", "MASSIVE", "NO WAY", "OMG", "THIS IS INSANE", "BEST STREAMER",
+    "HYPE", "LFG", "POGGG", "W W W", "DUB", "ABSOLUTE CINEMA", "GOATED", "UNREAL",
+    "CRACKED", "NUTTY", "clip of the year", "hall of fame stream", "W streamer",
+    "greatest of all time", "im hyped", "THE GOAT"
+  ],
+  "questioner": [
+    "what game is this", "how long you been live", "when did you start streaming",
+    "what are your specs", "what mouse do you use", "whats your keyboard",
+    "where you from", "do you stream everyday", "whats the schedule",
+    "how do i get vip", "can you say hi to my friend", "what rank are you",
+    "is this pc or console", "what headset is that", "favorite game of all time",
+    "drop the settings", "sens?", "dpi?", "whats the discord", "you got a yt channel?"
+  ],
+  "joker": [
+    "certified bruh moment", "i showed my cat this stream he left",
+    "my grandma plays better", "this is content", "comedy gold", "im crying",
+    "deceased", "im wheezing", "the way i screamed", "caught in 4k",
+    "down catastrophically", "sir this is a wendys", "who let bro cook",
+    "crying rn", "actual clown fiesta", "speedrun any% wrong", "not like this",
+    "somebody call an ambulance"
+  ],
+  "contrarian": [
+    "mid", "kinda mid ngl", "eh", "overrated", "ive seen better", "not that impressive",
+    "cap", "doubt", "x to doubt", "press x", "skill issue", "bad take", "L take",
+    "nah that was luck", "lucky", "pure rng", "carried", "actually wrong btw",
+    "source: trust me", "should have done it the other way"
+  ],
+  "newbie": [
+    "first time here", "new here whats up", "how do i sub", "how do the emotes work",
+    "what does kekw mean", "this chat moves so fast", "is the streamer always like this",
+    "just followed", "followed!", "how do i get points", "what are channel points",
+    "can the streamer see chat", "hi im new", "found you on tiktok",
+    "the algorithm brought me here", "whats a prime sub"
+  ],
+  "lurker": [
+    "back to lurking", "lurk mode", "good stream, lurking", "o7 lurking",
+    "popping in to say hi, back to lurk", "lunch break lurk", "study lurk",
+    "work lurk dont tell my boss", "lurking but vibing"
+  ],
+  "replies": [
+    "@{u} lol", "@{u} lmao", "@{u} fr", "@{u} real", "@{u} same", "@{u} true",
+    "@{u} no shot", "@{u} agreed", "@{u} nah", "@{u} cap", "@{u} W take",
+    "@{u} L take", "@{u} who asked lol", "@{u} wait what", "@{u} exactly",
+    "@{u} facts", "@{u} this"
+  ]
+}

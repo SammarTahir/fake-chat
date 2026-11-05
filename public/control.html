@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>fake chat — control</title>
+<style>
+  :root {
+    --bg: #0e0e10; --panel: #18181b; --panel2: #1f1f23; --border: #303036;
+    --text: #efeff1; --muted: #9199a4; --accent: #9147ff; --good: #00ad03;
+    --warn: #e6b800; --bad: #e91916;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: Inter, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 14px; }
+  body { padding: 18px; }
+  h1 { font-size: 18px; margin: 0 0 14px; }
+  h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .grid { display: grid; grid-template-columns: 340px 1fr 320px; gap: 14px; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+  .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex: none; }
+  .dot.ok { background: var(--good); }
+  .dot.warn { background: var(--warn); }
+  label { color: var(--muted); min-width: 150px; }
+  input[type=number], input[type=text], select {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 5px; padding: 6px 8px; width: 110px; font-size: 14px;
+  }
+  input[type=range] { width: 130px; accent-color: var(--accent); }
+  input[type=text].wide { width: 100%; }
+  select { width: auto; max-width: 200px; }
+  button {
+    background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 5px; padding: 8px 14px; font-size: 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  button.danger { background: var(--bad); border-color: var(--bad); font-weight: 700; }
+  button.big { padding: 12px 18px; font-size: 15px; }
+  #transcript {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 5px;
+    height: 180px; overflow-y: auto; padding: 10px; font-size: 13px; line-height: 1.5;
+  }
+  #transcript .interim { color: var(--muted); font-style: italic; }
+  #feed {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 5px;
+    height: 420px; overflow-y: auto; padding: 10px; font-size: 13px; line-height: 1.6;
+  }
+  #feed .n { font-weight: 700; }
+  #feed .sys { color: var(--muted); }
+  #feed .llm { color: var(--warn); }
+  #feed img { height: 20px; vertical-align: middle; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .triggers { display: flex; gap: 8px; flex-wrap: wrap; }
+  .val { color: var(--text); min-width: 34px; display: inline-block; text-align: right; }
+</style>
+</head>
+<body>
+<h1>fake chat — control</h1>
+<div class="grid">
+
+  <div><!-- left column -->
+    <div class="panel">
+      <h2>Status</h2>
+      <div class="row"><span class="dot" id="d-ws"></span> server <span id="s-ws" class="hint">connecting…</span></div>
+      <div class="row"><span class="dot" id="d-mic"></span> mic <span id="s-mic" class="hint">off</span></div>
+      <div class="row"><span class="dot" id="d-llm"></span> ollama <span id="s-llm" class="hint">unknown</span></div>
+      <div class="row"><span class="dot ok" style="background:#eb0400"></span> viewers <span id="s-viewers" class="hint">–</span></div>
+    </div>
+
+    <div class="panel">
+      <h2>Mic</h2>
+      <div class="row">
+        <button id="micBtn" class="primary big">Start mic</button>
+      </div>
+      <div id="transcript"></div>
+      <div class="hint">Chrome restarts recognition automatically after its ~60s silence timeout.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Panic</h2>
+      <button id="panicBtn" class="danger big">CLEAR OVERLAY</button>
+      <div class="hint">Instantly wipes all messages off the overlay and drops queued LLM comments.</div>
+    </div>
+  </div>
+
+  <div><!-- middle column -->
+    <div class="panel">
+      <h2>Settings (live, saved to config.json)</h2>
+      <div class="row"><label>messages / minute</label>
+        <input type="range" id="mpm" min="5" max="150" step="1"><span class="val" id="mpm-v"></span></div>
+      <div class="row"><label>reactive interval (s)</label>
+        <input type="range" id="ri" min="5" max="60" step="1"><span class="val" id="ri-v"></span></div>
+      <div class="row"><label>emote train chance</label>
+        <input type="range" id="etc" min="0" max="100" step="5"><span class="val" id="etc-v"></span></div>
+      <div class="row"><label>viewer count</label>
+        <input type="number" id="vc" min="0" step="1"></div>
+      <div class="row"><label>show viewer counter</label>
+        <input type="checkbox" id="vshow"></div>
+      <div class="row"><label>model</label>
+        <input type="text" id="model" style="width:180px"></div>
+      <div class="hint">Position / size / fonts live in config.json (hot-reloaded on save).</div>
+    </div>
+
+    <div class="panel">
+      <h2>Triggers</h2>
+      <div class="triggers">
+        <button data-t="hype">🔥 hype</button>
+        <button data-t="questions">❓ questions</button>
+        <button data-t="laugh">😂 laugh</button>
+        <button data-t="emote_spam">🌊 emote spam</button>
+        <button data-t="slow">🐌 slow down (30s)</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Inject message</h2>
+      <div class="row">
+        <select id="injWho"></select>
+        <input type="text" id="injText" class="wide" style="flex:1; width:auto" placeholder="message (emote names work, e.g. KEKW)">
+        <button id="injBtn">send</button>
+      </div>
+    </div>
+  </div>
+
+  <div><!-- right column -->
+    <div class="panel">
+      <h2>Live feed (what the overlay shows)</h2>
+      <div id="feed"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  let ws = null, wsOpen = false, backoff = 1000;
+  let config = null, emoteMap = {};
+
+  // ------------------------------------------------------------ websocket
+  function connect() {
+    ws = new WebSocket('ws://' + location.host + '/ws?role=control');
+    ws.onopen = () => {
+      wsOpen = true; backoff = 1000;
+      setDot('d-ws', 'ok'); $('s-ws').textContent = 'connected';
+    };
+    ws.onclose = () => {
+      wsOpen = false;
+      setDot('d-ws', ''); $('s-ws').textContent = 'reconnecting…';
+      setTimeout(connect, backoff = Math.min(backoff * 1.6, 15000));
+    };
+    ws.onerror = () => { try { ws.close(); } catch (e) {} };
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.type === 'init') {
+        applyConfig(m.config);
+        fillPersonas(m.personas);
+        setEmotes(m.emotes);
+        setOllama(m.status.ollama, m.status.model);
+        $('s-viewers').textContent = m.status.viewers;
+      }
+      else if (m.type === 'config') applyConfig(m.config);
+      else if (m.type === 'status') setOllama(m.ollama, m.model);
+      else if (m.type === 'viewers') $('s-viewers').textContent = m.n;
+      else if (m.type === 'emotes') setEmotes(m.emotes);
+      else if (m.type === 'feed') addFeed(m);
+      else if (m.type === 'feed_sys') addFeedSys(m.text);
+      else if (m.type === 'llm') addFeedLLM(m.added);
+    };
+  }
+  function sendMsg(obj) { if (wsOpen) ws.send(JSON.stringify(obj)); }
+  function setDot(id, cls) { $(id).className = 'dot ' + cls; }
+  function setOllama(st, model) {
+    setDot('d-llm', st === 'ready' ? 'ok' : st === 'missing' ? 'warn' : '');
+    $('s-llm').textContent = st === 'ready' ? ('ready (' + model + ')')
+      : st === 'missing' ? ('model not pulled — run: ollama pull ' + model)
+      : 'not running — ambient-only';
+  }
+  function setEmotes(list) { emoteMap = {}; for (const n of list) emoteMap[n] = true; }
+  connect();
+
+  // ------------------------------------------------------------ settings binding
+  const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+  function applyConfig(c) {
+    config = c;
+    $('mpm').value = c.chat.messagesPerMinute; $('mpm-v').textContent = c.chat.messagesPerMinute;
+    $('ri').value = c.ollama.reactiveIntervalSec; $('ri-v').textContent = c.ollama.reactiveIntervalSec + 's';
+    $('etc').value = Math.round(c.chat.emoteTrainChance * 100); $('etc-v').textContent = Math.round(c.chat.emoteTrainChance * 100) + '%';
+    if (document.activeElement !== $('vc')) $('vc').value = c.viewers.start;
+    $('vshow').checked = c.viewers.enabled;
+    if (document.activeElement !== $('model')) $('model').value = c.ollama.model;
+  }
+  const patch = debounce((p) => sendMsg({ type: 'set', patch: p }), 400);
+  $('mpm').oninput = () => { $('mpm-v').textContent = $('mpm').value; patch({ chat: { messagesPerMinute: +$('mpm').value } }); };
+  $('ri').oninput = () => { $('ri-v').textContent = $('ri').value + 's'; patch({ ollama: { reactiveIntervalSec: +$('ri').value } }); };
+  $('etc').oninput = () => { $('etc-v').textContent = $('etc').value + '%'; patch({ chat: { emoteTrainChance: +$('etc').value / 100 } }); };
+  $('vc').onchange = () => patch({ viewers: { start: +$('vc').value } });
+  $('vshow').onchange = () => patch({ viewers: { enabled: $('vshow').checked } });
+  $('model').onchange = () => patch({ ollama: { model: $('model').value.trim() } });
+
+  // ------------------------------------------------------------ triggers / inject / panic
+  document.querySelectorAll('[data-t]').forEach((b) => {
+    b.onclick = () => sendMsg({ type: 'trigger', kind: b.dataset.t });
+  });
+  $('panicBtn').onclick = () => sendMsg({ type: 'panic' });
+  function fillPersonas(list) {
+    const sel = $('injWho');
+    sel.innerHTML = '';
+    for (const p of list) {
+      const o = document.createElement('option');
+      o.value = p.name;
+      o.textContent = p.name + (p.badges.length ? ' [' + p.badges.join(',') + ']' : '');
+      sel.appendChild(o);
+    }
+  }
+  function inject() {
+    const text = $('injText').value.trim();
+    if (!text) return;
+    sendMsg({ type: 'inject', name: $('injWho').value, text });
+    $('injText').value = '';
+  }
+  $('injBtn').onclick = inject;
+  $('injText').onkeydown = (e) => { if (e.key === 'Enter') inject(); };
+
+  // ------------------------------------------------------------ live feed
+  const feed = $('feed');
+  function feedPush(el) {
+    const stick = feed.scrollTop + feed.clientHeight > feed.scrollHeight - 40;
+    feed.appendChild(el);
+    while (feed.children.length > 120) feed.firstChild.remove();
+    if (stick) feed.scrollTop = feed.scrollHeight;
+  }
+  function addFeed(m) {
+    const el = document.createElement('div');
+    const n = document.createElement('span');
+    n.className = 'n'; n.style.color = m.color; n.textContent = m.name;
+    el.appendChild(n);
+    el.appendChild(document.createTextNode(': '));
+    for (const p of m.parts) {
+      if (p.t === 'e') { const i = document.createElement('img'); i.src = p.u; i.title = p.n; el.appendChild(i); }
+      else el.appendChild(document.createTextNode(p.v));
+    }
+    feedPush(el);
+  }
+  function addFeedSys(text) {
+    const el = document.createElement('div');
+    el.className = 'sys'; el.textContent = text;
+    feedPush(el);
+  }
+  function addFeedLLM(msgs) {
+    const el = document.createElement('div');
+    el.className = 'llm'; el.textContent = 'LLM queued: ' + msgs.join(' | ');
+    feedPush(el);
+  }
+
+  // ------------------------------------------------------------ mic / speech recognition
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, micOn = false;
+  const tEl = $('transcript');
+  // wipe the transcript box after 10s without new speech
+  let lastSpeechAt = 0;
+  setInterval(() => {
+    if (lastSpeechAt && Date.now() - lastSpeechAt > 10000 && tEl.children.length) {
+      tEl.innerHTML = '';
+      lastSpeechAt = 0;
+    }
+  }, 1000);
+  function tPush(text, interim) {
+    lastSpeechAt = Date.now();
+    let last = tEl.lastChild;
+    if (interim) {
+      if (!last || !last.classList.contains('interim')) {
+        last = document.createElement('div');
+        last.className = 'interim';
+        tEl.appendChild(last);
+      }
+      last.textContent = text;
+    } else {
+      if (last && last.classList.contains('interim')) last.remove();
+      const el = document.createElement('div');
+      el.textContent = text;
+      tEl.appendChild(el);
+      while (tEl.children.length > 60) tEl.firstChild.remove();
+    }
+    tEl.scrollTop = tEl.scrollHeight;
+  }
+  function startRec() {
+    if (!SR) {
+      $('s-mic').textContent = 'Web Speech API unavailable — use Chrome';
+      return;
+    }
+    rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = navigator.language || 'en-US';
+    rec.onresult = (ev) => {
+      let interim = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const r = ev.results[i];
+        if (r.isFinal) {
+          const text = r[0].transcript.trim();
+          if (text) { tPush(text, false); sendMsg({ type: 'transcript', text }); }
+        } else interim += r[0].transcript;
+      }
+      if (interim) tPush(interim, true);
+    };
+    // Chrome kills continuous recognition after ~60s of silence — restart forever
+    rec.onend = () => {
+      if (micOn) setTimeout(() => { try { rec.start(); } catch (e) {} }, 250);
+      else { setDot('d-mic', ''); $('s-mic').textContent = 'off'; }
+    };
+    rec.onerror = (ev) => {
+      if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+        micOn = false;
+        setDot('d-mic', '');
+        $('s-mic').textContent = 'mic permission denied';
+      }
+      // 'no-speech' / 'network' etc: onend fires next and restarts
+    };
+    try { rec.start(); } catch (e) {}
+    setDot('d-mic', 'ok');
+    $('s-mic').textContent = 'listening';
+  }
+  $('micBtn').onclick = () => {
+    micOn = !micOn;
+    $('micBtn').textContent = micOn ? 'Stop mic' : 'Start mic';
+    $('micBtn').classList.toggle('primary', !micOn);
+    if (micOn) startRec();
+    else if (rec) { try { rec.stop(); } catch (e) {} }
+  };
+})();
+</script>
+</body>
+</html>

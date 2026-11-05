@@ -1,0 +1,20 @@
+node_modules/
+
+# Generated on first run and then tuned per-user — the server recreates both
+# if they are missing, so they are not tracked (no merge conflicts on your
+# personal settings, no accidental sharing of your roster).
+config.json
+personas.json
+
+# Emote images are third-party artwork downloaded for local use and are NOT
+# redistributed with this project. `node tools/fetch_emotes.js` populates this
+# folder, and the server generates its own placeholder set when it is empty.
+emotes/*
+!emotes/.gitkeep
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/

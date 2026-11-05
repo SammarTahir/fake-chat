@@ -1,0 +1,13 @@
+{
+  "name": "fake-chat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Locally-run fake Twitch chat overlay for OBS, driven by mic transcript + local LLM",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

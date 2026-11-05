@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>fake chat overlay</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+  }
+  body {
+    font-family: Inter, Roobert, "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  :root {
+    --fs: 26px;          /* font size   */
+    --es: 30px;          /* emote size  */
+    --gap: 6px;          /* msg spacing */
+  }
+  #col {
+    position: fixed;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+    /* old messages fade into nothing at the top instead of hard-clipping */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 14%);
+    mask-image: linear-gradient(to bottom, transparent 0%, black 14%);
+  }
+  .msg {
+    flex: none;
+    padding: 2px 10px;
+    margin-bottom: var(--gap);
+    font-size: var(--fs);
+    line-height: 1.4;
+    color: #efeff1;
+    overflow-wrap: anywhere;
+    text-shadow:
+      -1px -1px 0 rgba(0,0,0,.55), 1px -1px 0 rgba(0,0,0,.55),
+      -1px  1px 0 rgba(0,0,0,.55), 1px  1px 0 rgba(0,0,0,.55),
+       0 1px 6px rgba(0,0,0,.55);
+    animation: enter .18s ease-out;
+    transition: opacity .5s ease-out;
+  }
+  @keyframes enter {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .msg.out { opacity: 0; }
+  .name { font-weight: 700; }
+  .mention { color: #a5b5ff; font-weight: 600; }
+  .sys {
+    color: #9199a4;
+    font-size: calc(var(--fs) * 0.82);
+    font-style: normal;
+  }
+  .badge {
+    display: inline-block;
+    width: calc(var(--fs) * 0.72);
+    height: calc(var(--fs) * 0.72);
+    margin-right: 4px;
+    margin-bottom: calc(var(--fs) * -0.08);
+    border-radius: 3px;
+    vertical-align: baseline;
+  }
+  .emote {
+    height: var(--es);
+    margin: calc(var(--es) * -0.25) 1px 0;
+    vertical-align: middle;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,.6));
+  }
+  #viewers {
+    position: fixed;
+    display: none;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 12px;
+    border-radius: 6px;
+    background: rgba(0,0,0,.5);
+    color: #fff;
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  #viewers .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #eb0400;
+  }
+  #viewers .n { color: #ff8280; }
+</style>
+</head>
+<body>
+<div id="col"></div>
+<div id="viewers"><span class="dot"></span><span class="n" id="vcount">0</span></div>
+<script>
+(() => {
+  'use strict';
+  const col = document.getElementById('col');
+  const viewersEl = document.getElementById('viewers');
+  const vcountEl = document.getElementById('vcount');
+
+  // ------------------------------------------------------------ settings
+  let cfg = {
+    width: 460, height: 1250,
+    anchor: 'bottom-left',        // bottom-left | bottom-right | top-left | top-right
+    margin: [24, 24],             // [x, y] px from the anchored edges
+    fontSize: 26,
+    emoteScale: 1.15,
+    msgSpacing: 6,
+    maxMessages: 14,
+    viewerCorner: 'top-right',    // top-left | top-right | bottom-left | bottom-right
+    viewerMargin: [24, 24],
+    showViewers: true,
+  };
+
+  function applyCfg(c) {
+    cfg = Object.assign(cfg, c || {});
+    const r = document.documentElement.style;
+    r.setProperty('--fs', cfg.fontSize + 'px');
+    r.setProperty('--es', Math.round(cfg.fontSize * cfg.emoteScale) + 'px');
+    r.setProperty('--gap', cfg.msgSpacing + 'px');
+    col.style.width = cfg.width + 'px';
+    col.style.height = cfg.height + 'px';
+    col.style.left = col.style.right = col.style.top = col.style.bottom = 'auto';
+    const [mx, my] = cfg.margin;
+    if (cfg.anchor.includes('left')) col.style.left = mx + 'px'; else col.style.right = mx + 'px';
+    if (cfg.anchor.includes('top')) col.style.top = my + 'px'; else col.style.bottom = my + 'px';
+    viewersEl.style.left = viewersEl.style.right = viewersEl.style.top = viewersEl.style.bottom = 'auto';
+    const [vx, vy] = cfg.viewerMargin;
+    if (cfg.viewerCorner.includes('left')) viewersEl.style.left = vx + 'px'; else viewersEl.style.right = vx + 'px';
+    if (cfg.viewerCorner.includes('top')) viewersEl.style.top = vy + 'px'; else viewersEl.style.bottom = vy + 'px';
+    viewersEl.style.display = cfg.showViewers ? 'flex' : 'none';
+    viewersEl.style.fontSize = Math.round(cfg.fontSize * 0.85) + 'px';
+  }
+  applyCfg();
+
+  // ------------------------------------------------------------ badges (inline SVG, self-contained)
+  const svg = (body) => 'data:image/svg+xml;utf8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18">' + body + '</svg>');
+  const BADGES = {
+    broadcaster: svg('<rect width="18" height="18" rx="3" fill="#e91916"/><path d="M4 6.5h7.5v5H4z" fill="#fff"/><path d="M12 8.5l3-2v5l-3-2z" fill="#fff"/>'),
+    mod: svg('<rect width="18" height="18" rx="3" fill="#00ad03"/><path d="M12.5 3.5l2 2-5.4 5.4.9.9-1.8 1.8-.9-.9-1.5 1.5-1-1 1.5-1.5-.9-.9 1.8-1.8.9.9z" fill="#fff"/>'),
+    vip: svg('<rect width="18" height="18" rx="3" fill="#e005b9"/><path d="M9 3.5l5.5 4L9 14.5 3.5 7.5z" fill="#fff"/>'),
+    sub1: svg('<rect width="18" height="18" rx="3" fill="#8205b4"/><path d="M9 3l1.8 3.9 4.2.5-3.1 2.9.8 4.2L9 12.4l-3.7 2.1.8-4.2L3 7.4l4.2-.5z" fill="#fff"/>'),
+    sub2: svg('<rect width="18" height="18" rx="3" fill="#5c16c5"/><path d="M9 3l1.8 3.9 4.2.5-3.1 2.9.8 4.2L9 12.4l-3.7 2.1.8-4.2L3 7.4l4.2-.5z" fill="#fff"/>'),
+    sub3: svg('<rect width="18" height="18" rx="3" fill="#451093"/><path d="M9 3l1.8 3.9 4.2.5-3.1 2.9.8 4.2L9 12.4l-3.7 2.1.8-4.2L3 7.4l4.2-.5z" fill="#ffd37a"/>'),
+    prime: svg('<rect width="18" height="18" rx="3" fill="#0e9bd8"/><path d="M3.5 13V6l3.2 2.6L9 4.5l2.3 4.1L14.5 6v7z" fill="#fff"/>'),
+  };
+
+  // ------------------------------------------------------------ rendering
+  function renderMsg(m) {
+    const el = document.createElement('div');
+    el.className = 'msg';
+    for (const b of m.badges || []) {
+      if (!BADGES[b]) continue;
+      const img = document.createElement('img');
+      img.className = 'badge';
+      img.src = BADGES[b];
+      el.appendChild(img);
+    }
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.style.color = m.color || '#efeff1';
+    name.textContent = m.name;
+    el.appendChild(name);
+    el.appendChild(document.createTextNode(': '));
+    for (const p of m.parts || []) {
+      if (p.t === 'e') {
+        const img = document.createElement('img');
+        img.className = 'emote';
+        img.src = p.u;
+        img.alt = p.n;
+        el.appendChild(img);
+      } else if (p.t === 'm') {
+        const sp = document.createElement('span');
+        sp.className = 'mention';
+        sp.textContent = p.v;
+        el.appendChild(sp);
+      } else {
+        el.appendChild(document.createTextNode(p.v));
+      }
+    }
+    push(el);
+  }
+  function renderSys(text) {
+    const el = document.createElement('div');
+    el.className = 'msg sys';
+    el.textContent = text;
+    push(el);
+  }
+  function push(el) {
+    col.appendChild(el);
+    // fade out messages beyond the visible cap, then remove them (bounded DOM)
+    const kids = col.children;
+    const over = kids.length - cfg.maxMessages;
+    for (let i = 0; i < over; i++) {
+      const k = kids[i];
+      if (!k.classList.contains('out')) {
+        k.classList.add('out');
+        setTimeout(() => k.remove(), 550);
+      }
+    }
+    while (kids.length > cfg.maxMessages + 10) kids[0].remove();
+  }
+  function clearAll() { col.innerHTML = ''; }
+  function setViewers(n) { vcountEl.textContent = n.toLocaleString(); }
+
+  // ------------------------------------------------------------ websocket (silent, auto-reconnect)
+  const DEMO = /[?&]demo/.test(location.search);
+  if (!DEMO) {
+    let backoff = 1000;
+    function connect() {
+      let ws;
+      try { ws = new WebSocket('ws://' + (location.host || 'localhost:8080') + '/ws?role=overlay'); }
+      catch (e) { return setTimeout(connect, backoff = Math.min(backoff * 1.6, 30000)); }
+      ws.onopen = () => { backoff = 1000; };
+      ws.onmessage = (ev) => {
+        let m;
+        try { m = JSON.parse(ev.data); } catch (e) { return; }
+        if (m.type === 'chat') renderMsg(m);
+        else if (m.type === 'system') renderSys(m.text);
+        else if (m.type === 'viewers') setViewers(m.n);
+        else if (m.type === 'clear') clearAll();
+        else if (m.type === 'init') { applyCfg(m.overlay); if (m.viewers != null) setViewers(m.viewers); }
+      };
+      ws.onclose = () => setTimeout(connect, backoff = Math.min(backoff * 1.6, 30000));
+      ws.onerror = () => { try { ws.close(); } catch (e) {} };
+    }
+    connect();
+  }
+
+  // ------------------------------------------------------------ demo mode (?demo) — stage-1 styling check, no backend
+  if (DEMO) {
+    const base = location.protocol === 'file:' ? '../emotes/' : '/emotes/';
+    const EMOTES = ['Pog', 'KEKW', 'LULW', 'Sadge', 'EZ', 'monkaS', '5Head', 'WICKED'];
+    const ANIM = { catJAM: 'catJAM.gif', PartyBlob: 'PartyBlob.gif', PETTHEPET: 'PETTHEPET.gif' };
+    const url = (n) => base + (ANIM[n] || n + '.png');
+    const P = [
+      ['xX_shadowwolf_Xx', '#FF4500', ['sub2']], ['toastbean', '#1E90FF', []],
+      ['pixeldrift_ttv', '#9ACD32', ['mod']], ['gnomechild123', '#FF69B4', []],
+      ['frostmage', '#8A2BE2', ['sub1', 'prime']], ['duckduckgoose', '#DAA520', []],
+      ['mango_lord', '#2E8B57', ['vip']], ['quietwatcher', '#5F9EA0', []],
+      ['NightOwl_ttv', '#B22222', ['sub3']], ['cheeseweasel', '#FF7F50', []],
+    ];
+    const LINES = ['lol', 'LETS GOOO', 'no shot', 'what game is this', 'W', 'clip it', 'true',
+      'chat is this real', 'first time here', 'sheeesh', 'mid tbh', 'he said WHAT', 'same',
+      'my wifi is dying', 'KEKW KEKW', 'Pog Pog Pog', 'catJAM', 'PETTHEPET PETTHEPET',
+      'wait what monkaS', 'EZ Clap', '@toastbean lmao', 'PartyBlob PartyBlob PartyBlob', '5Head play'];
+    let train = null;
+    function demoTick() {
+      const r = Math.random();
+      if (r < 0.06) renderSys(P[(Math.random() * P.length) | 0][0] + ' joined');
+      else {
+        const p = P[(Math.random() * P.length) | 0];
+        let text;
+        if (train && train.n > 0) { text = (train.e + ' ').repeat(1 + ((Math.random() * 3) | 0)).trim(); train.n--; }
+        else if (r < 0.3) {
+          const e = EMOTES.concat(Object.keys(ANIM))[(Math.random() * 11) | 0];
+          text = (e + ' ').repeat(1 + ((Math.random() * 3) | 0)).trim();
+          if (Math.random() < 0.35) train = { e, n: 2 + ((Math.random() * 4) | 0) };
+        } else text = LINES[(Math.random() * LINES.length) | 0];
+        const parts = text.split(/(\s+)/).map((tok) => {
+          if (EMOTES.includes(tok) || ANIM[tok] || tok === 'Clap') {
+            return { t: 'e', n: tok, u: url(tok === 'Clap' ? 'PETTHEPET' : tok) };
+          }
+          if (tok.startsWith('@')) return { t: 'm', v: tok };
+          return { t: 't', v: tok };
+        });
+        renderMsg({ name: p[0], color: p[1], badges: p[2], parts });
+      }
+      setTimeout(demoTick, 350 + Math.random() * 1300);
+    }
+    let v = 47;
+    setInterval(() => { v = Math.max(5, v + ((Math.random() * 5) | 0) - 2); setViewers(v); }, 3000);
+    setViewers(v);
+    demoTick();
+  }
+})();
+</script>
+</body>
+</html>
