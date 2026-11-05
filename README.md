@@ -52,14 +52,17 @@ shuts it down.
 Optional (for the LLM reactive layer):
 
 ```
-ollama pull llama3.2:3b
+ollama pull gemma3:4b
 ```
 
 If Ollama isn't running or the model isn't pulled, the app runs in
 **ambient-only mode** — canned chat still flows, nothing breaks, nothing shows
 on stream. The server prints the exact pull command it needs.
-Any pulled model works: set `ollama.model` in `config.json` (a ~3B model is
-recommended so it doesn't starve NVENC on the shared GPU).
+Any pulled model works: set `ollama.model` in `config.json`. Stick to a small
+(3–4B) model so it doesn't compete with OBS for the GPU — on an 8 GB card,
+`gemma3:4b` returned a clean batch of 10 comments in under a second every time
+in testing, ahead of `llama3.2:3b` and `qwen3.5:4b`. Newer models need a
+recent Ollama; if a pull fails with "requires a newer version", update Ollama.
 
 ## The three pages
 

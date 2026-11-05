@@ -71,7 +71,7 @@ const DEFAULTS = {
     fontSize: 26, emoteScale: 1.15, msgSpacing: 6, maxMessages: 14,
   },
   ollama: {
-    url: 'http://localhost:11434', model: 'llama3.2:3b', timeoutMs: 12000,
+    url: 'http://localhost:11434', model: 'gemma3:4b', timeoutMs: 12000,
     reactiveIntervalSec: 12, transcriptWindowSec: 15, maxPerCycle: 10,
     temperature: 0.9,
   },
@@ -176,7 +176,9 @@ function serializeConfig(c) {
 
   "ollama": {
     "url": "${c.ollama.url}",
-    // Keep this a ~3B model — it shares the GPU with NVENC.
+    // Keep this a small (3-4B) model — it shares the GPU with OBS/NVENC.
+    // gemma3:4b gave the most reliable batches in testing; thinking models
+    // (e.g. qwen3.5) work too since reasoning is switched off per request.
     "model": "${c.ollama.model}",
     // Hard timeout per generation; on timeout the cycle is skipped silently.
     "timeoutMs": ${c.ollama.timeoutMs},
@@ -788,6 +790,9 @@ async function llmCallOnce() {
         stream: false,
         format: 'json',
         keep_alive: '30m',
+        // thinking models otherwise burn the whole timeout reasoning and
+        // return nothing; non-thinking models ignore this
+        think: false,
         options: { temperature: cfg.ollama.temperature, num_predict: 512 },
         messages: [
           { role: 'system', content: llmSystemPrompt() },
