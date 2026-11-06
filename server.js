@@ -27,6 +27,7 @@ catch (e) {
   process.exit(1);
 }
 const { ensurePlaceholderEmotes } = require('./tools/gen_emotes.js');
+const { searchBTTV, downloadEmote } = require('./tools/fetch_emotes.js');
 
 const ROOT = __dirname;
 const CONFIG_PATH = path.join(ROOT, 'config.json');
@@ -84,6 +85,7 @@ const DEFAULTS = {
   },
   personas: { count: 60 },
   stream: { game: '', notes: '' },
+  emotes: { disabled: [] },
 };
 
 function deepMerge(base, over) {
@@ -213,6 +215,12 @@ function serializeConfig(c) {
     "game": ${JSON.stringify(c.stream.game)},
     // Anything the AI should know right now, e.g. "Rivals div 3, team has Mbappe".
     "notes": ${JSON.stringify(c.stream.notes)}
+  },
+
+  "emotes": {
+    // Emotes switched off in the app (chat and the AI never use these).
+    // Game-specific emotes are listed per game in games.json.
+    "disabled": ${JSON.stringify(c.emotes.disabled || [])}
   }
 }
 `;
@@ -347,6 +355,66 @@ function gameSummary() {
   const g = activeGame();
   return { typed: cfg.stream.game, name: g.name, known: g.known, key: g.key };
 }
+// ---------------------------------------------------------------- emote manager
+let lastGamesWrite = 0;
+function saveGames() {
+  lastGamesWrite = Date.now();
+  fs.writeFileSync(GAMES_PATH, JSON.stringify(gamePacks, null, 2) + '\n');
+}
+function emoteState() {
+  const g = activeGame();
+  const off = disabledEmotes();
+  const mine = new Set(g.emotes || []);
+  return {
+    type: 'emoteState',
+    list: emoteNames()
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+      .map((n) => ({ name: n, url: '/emotes/' + encodeURIComponent(emotes.get(n)), on: !off.has(n), game: mine.has(n) })),
+    // an unrecognised typed game has no pack to save emotes into
+    game: { key: g.key, name: g.name, taggable: !!g.key, search: g.emoteSearch || [] },
+  };
+}
+function setEmoteEnabled(name, on) {
+  if (!emotes.has(name)) return;
+  const off = disabledEmotes();
+  if (on) off.delete(name); else off.add(name);
+  cfg.emotes.disabled = [...off].sort();
+  saveConfig();
+  toControls(emoteState());
+}
+function setEmoteForGame(name, on) {
+  const key = activeGame().key;
+  const pack = key && gamePacks.games[key];
+  if (!pack || !emotes.has(name)) return;
+  const list = new Set(pack.emotes || []);
+  if (on) list.add(name); else list.delete(name);
+  pack.emotes = [...list];
+  saveGames();
+  toControls(emoteState());
+}
+async function bttvSearch(ws, query) {
+  if (!query) return;
+  try {
+    const have = new Set(emoteNames().map((n) => n.toLowerCase()));
+    const results = (await searchBTTV(query, 36)).map((r) => ({ ...r, have: have.has(r.code.toLowerCase()) }));
+    send(ws, { type: 'bttvResults', query, results });
+  } catch (e) {
+    send(ws, { type: 'bttvResults', query, results: [], error: 'Could not reach BetterTTV. Check your internet connection.' });
+  }
+}
+async function addEmote(ws, m) {
+  try {
+    const { code } = await downloadEmote(String(m.id), String(m.code), EMOTES_DIR);
+    scanEmotes();
+    console.log('[emotes] added ' + code);
+    if (m.forGame) setEmoteForGame(code, true);
+    else toControls(emoteState());
+    send(ws, { type: 'emoteAdded', id: m.id, code, ok: true });
+  } catch (e) {
+    send(ws, { type: 'emoteAdded', id: m.id, code: m.code, ok: false, error: e.message });
+  }
+}
+
 function gameList() {
   return Object.entries(gamePacks.games || {})
     .filter(([key]) => key !== 'general')
@@ -370,11 +438,25 @@ scanEmotes();
 console.log(`[emotes] ${emotes.size} emotes loaded: ${[...emotes.keys()].join(' ')}`);
 
 const emoteNames = () => [...emotes.keys()];
-function emotesMatching(re) {
-  const hit = emoteNames().filter((n) => re.test(n));
-  return hit.length ? hit : emoteNames();
+// Emotes switched off in the app are never picked by chat or the AI (they
+// still render if you type one yourself). The active game's emotes are
+// favoured, so a football stream gets GOAL and SIUUU, not only KEKW.
+const disabledEmotes = () => new Set(cfg.emotes.disabled || []);
+const usableEmotes = () => { const off = disabledEmotes(); return emoteNames().filter((n) => !off.has(n)); };
+function gameEmotes() {
+  const off = disabledEmotes();
+  return (activeGame().emotes || []).filter((n) => emotes.has(n) && !off.has(n));
 }
-const hypeEmotes = () => emotesMatching(/pog|hype|party|jam|dance|ez|wicked|fire|clap/i);
+function emotePool() {
+  const g = gameEmotes();
+  return g.length && chance(0.45) ? g : usableEmotes();
+}
+function emotesMatching(re) {
+  const all = usableEmotes();
+  const hit = all.filter((n) => re.test(n));
+  return hit.length ? hit : all;
+}
+const hypeEmotes = () => [...gameEmotes(), ...emotesMatching(/pog|hype|party|jam|dance|ez|wicked|fire|clap/i)];
 const laughEmotes = () => emotesMatching(/kek|lul|laugh|lol|icant|omega/i);
 
 // text -> parts array; whitespace-delimited tokens matching emote names (case-sensitive) become images
@@ -426,6 +508,7 @@ function controlInit() {
     config: cfg,
     personas: personas.map((p) => ({ name: p.name, color: p.color, tag: p.tag, badges: p.badges })),
     emotes: emoteNames(),
+    emoteState: emoteState(),
     models: state.models,
     games: gameList(),
     game: gameSummary(),
@@ -455,12 +538,16 @@ wss.on('connection', (ws, req) => {
     let m;
     try { m = JSON.parse(buf.toString()); } catch (e) { return; }
     if (role !== 'control') return;
-    handleControlMsg(m);
+    handleControlMsg(m, ws);
   });
 });
 
-function handleControlMsg(m) {
+function handleControlMsg(m, ws) {
   switch (m.type) {
+    case 'emoteSet': setEmoteEnabled(m.name, !!m.on); break;
+    case 'emoteGame': setEmoteForGame(m.name, !!m.on); break;
+    case 'bttvSearch': bttvSearch(ws, String(m.query || '').trim()); break;
+    case 'emoteAdd': addEmote(ws, m); break;
     case 'transcript':
       if (typeof m.text === 'string' && m.text.trim()) {
         const t = Date.now();
@@ -624,7 +711,7 @@ function sendSystem(text) {
 }
 
 function emoteOnlyText(pool) {
-  const list = pool && pool.length ? pool : emoteNames();
+  const list = pool && pool.length ? pool : emotePool();
   if (!list.length) return 'lol';
   const e = pick(list);
   const reps = chance(0.55) ? 1 : randInt(2, 4);
@@ -685,7 +772,8 @@ function produceMessage() {
     if (target) return sendChat(p, pick(ambient.replies || ['@{u} lol']).replace('{u}', target));
   }
   let line = cannedFor(p);
-  if (chance(cfg.chat.appendEmoteChance) && emotes.size) line += ' ' + pick(emoteNames());
+  const extra = emotePool();
+  if (chance(cfg.chat.appendEmoteChance) && extra.length) line += ' ' + pick(extra);
   sendChat(p, line);
 }
 
@@ -897,8 +985,10 @@ async function warmModel() {
 // short emote list, and show one worked example as a prior turn, which small
 // models copy far more reliably than written rules.
 function reactionEmotes() {
-  const listed = (gamePacks.reactionEmotes || []).filter((e) => emotes.has(e));
-  return (listed.length >= 4 ? listed : emoteNames()).slice(0, 12);
+  const usable = new Set(usableEmotes());
+  const listed = (gamePacks.reactionEmotes || []).filter((e) => usable.has(e));
+  // the game's own emotes go first so the AI actually uses them
+  return [...new Set([...gameEmotes().slice(0, 5), ...(listed.length >= 4 ? listed : [...usable])])].slice(0, 12);
 }
 function llmMessages(said) {
   const g = activeGame();
@@ -1054,6 +1144,7 @@ function applyRuntimeConfig() {
   startViewerTimer();
   toOverlays(overlayInit());
   toControls({ type: 'config', config: cfg, game: gameSummary() });
+  toControls(emoteState()); // game tags depend on the active game
 }
 fs.watchFile(CONFIG_PATH, { interval: 700 }, () => {
   if (Date.now() - lastSelfWrite < 1500) return;
@@ -1063,9 +1154,11 @@ fs.watchFile(CONFIG_PATH, { interval: 700 }, () => {
 });
 fs.watchFile(AMBIENT_PATH, { interval: 2000 }, () => { loadAmbient(); console.log('[ambient] reloaded'); });
 fs.watchFile(GAMES_PATH, { interval: 2000 }, () => {
+  if (Date.now() - lastGamesWrite < 3000) return; // our own save from the app
   loadGames();
   console.log('[games] reloaded');
   toControls({ type: 'games', games: gameList(), active: gameSummary() });
+  toControls(emoteState());
 });
 let emoteRescan = null;
 try {
@@ -1078,7 +1171,7 @@ try {
       scanEmotes();
       if (emoteNames().join('|') === before) return;
       console.log(`[emotes] rescanned: ${emotes.size} emotes`);
-      toControls({ type: 'emotes', emotes: emoteNames() });
+      toControls(emoteState());
     }, 500);
   });
 } catch (e) { /* fs.watch can be flaky; startup scan already done */ }

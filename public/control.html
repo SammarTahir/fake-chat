@@ -110,6 +110,46 @@
   }
   textarea:focus { outline: none; border-color: var(--accent); }
   .url { display: flex; gap: 8px; }
+
+  /* ---------------------------------------------------------------- emotes */
+  .emo-sum { font-size: 13px; color: var(--muted); }
+  .emo-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+  .emo-strip img { height: 30px; border-radius: 4px; }
+  .modal {
+    position: fixed; inset: 0; z-index: 20; display: none; background: rgba(0,0,0,.6);
+    align-items: stretch; justify-content: center; padding: 22px;
+  }
+  .modal.show { display: flex; }
+  .modal-box {
+    width: min(1180px, 100%); display: flex; flex-direction: column; min-height: 0;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+  }
+  .modal-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .modal-head h1 { margin: 0; font-size: 17px; }
+  .modal-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
+  .modal-body h3 { margin: 0 0 8px; font-size: 14px; }
+  .modal-body .tools { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; margin-bottom: 8px; }
+  .egrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin-top: 10px; }
+  .etile {
+    position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px;
+    padding: 9px 6px 7px; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+    cursor: pointer; user-select: none;
+  }
+  .etile:hover { border-color: var(--accent); }
+  .etile img { height: 40px; max-width: 80px; object-fit: contain; }
+  .etile .nm { font-size: 11.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .etile.off img { opacity: .25; filter: grayscale(1); }
+  .etile.off .nm { color: var(--muted); text-decoration: line-through; }
+  .etile .star {
+    position: absolute; top: 3px; right: 3px; padding: 0 5px; border: 0; background: none;
+    font-size: 15px; line-height: 1.2; color: #55555e;
+  }
+  .etile .star.on { color: #ffc93c; }
+  .etile .star:disabled { display: none; }
+  .etile .add { padding: 3px 9px; font-size: 12px; }
+  .etile .add.done { border-color: var(--good); color: #b8ffd3; }
+  .bttv-status { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  @media (max-width: 860px) { .modal-body { grid-template-columns: 1fr; } }
   .url input { flex: 1; min-width: 0; font-family: Consolas, monospace; font-size: 12.5px; }
 
   /* ---------------------------------------------------------------- closed screen */
@@ -191,6 +231,12 @@
       <textarea id="notes" rows="2" placeholder="e.g. Rivals div 3, my team has Mbappe, trying to rank up"></textarea>
     </div>
     <div class="card">
+      <h2>Emotes</h2>
+      <div class="emo-sum" id="emoSummary"></div>
+      <div class="emo-strip" id="emoStrip"></div>
+      <button id="emoOpen" style="margin-top:11px;width:100%">Manage emotes &amp; find more…</button>
+    </div>
+    <div class="card">
       <h2>Settings <span style="text-transform:none;letter-spacing:0;font-weight:400">— saved automatically, applied live</span></h2>
 
       <div class="section">
@@ -261,6 +307,41 @@
   </div>
 </main>
 
+<div id="emoModal" class="modal">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h1>Emotes</h1>
+      <span class="note" style="margin:0" id="emoHeadNote"></span>
+      <div class="spacer"></div>
+      <button id="emoClose" class="btn-run" style="min-width:0;padding:7px 18px">Done</button>
+    </div>
+    <div class="modal-body">
+      <section>
+        <h3>Your emotes</h3>
+        <div class="tools">
+          <div class="chips" id="emoFilters"></div>
+          <input type="text" id="emoSearch" placeholder="filter by name" style="flex:1;min-width:120px">
+        </div>
+        <div class="note" id="emoHelp"></div>
+        <div class="egrid" id="emoGrid"></div>
+      </section>
+      <section>
+        <h3>Find more on BetterTTV</h3>
+        <div class="chips" id="bttvChips"></div>
+        <div class="row" style="margin-top:9px">
+          <input type="text" id="bttvQuery" placeholder="search, e.g. goal, nuke, siuu">
+          <button id="bttvGo">Search</button>
+        </div>
+        <label class="note" style="display:flex;gap:7px;align-items:center;margin-top:9px">
+          <input type="checkbox" id="bttvForGame" checked> <span id="bttvForGameText"></span>
+        </label>
+        <div class="bttv-status" id="bttvStatus">Pick a suggestion or search for anything.</div>
+        <div class="egrid" id="bttvGrid"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
 <div id="closed">
   <img src="/icon.png" alt="" width="56" height="56">
   <h1>Fake Chat has stopped</h1>
@@ -296,6 +377,7 @@
           fillModels(m.models);
           fillGames(m.games);
           setGame(m.game);
+          setEmotes(m.emoteState);
           setAi(m.status.ollama, m.status.model);
           setRun(m.running);
           setObs(m.overlays);
@@ -304,6 +386,9 @@
           break;
         case 'config': applyConfig(m.config); if (m.game) setGame(m.game); break;
         case 'games': fillGames(m.games); setGame(m.active); break;
+        case 'emoteState': setEmotes(m); break;
+        case 'bttvResults': showBttv(m); break;
+        case 'emoteAdded': emoteAdded(m); break;
         case 'run': setRun(m.on); break;
         case 'status': setAi(m.ollama, m.model); break;
         case 'models': fillModels(m.models); break;
@@ -401,6 +486,133 @@
   }
   $('game').oninput = () => queuePatch({ stream: { game: $('game').value.trim() } }, 700);
   $('notes').oninput = () => queuePatch({ stream: { notes: $('notes').value.trim() } }, 700);
+
+  // ------------------------------------------------------------ emotes
+  let emo = { list: [], game: {} }, emoFilter = 'all', lastBttv = null;
+  const adding = new Set(); // BTTV ids being downloaded
+  function setEmotes(st) {
+    emo = st;
+    const g = st.game;
+    const gameName = g.taggable && g.key !== 'general' ? g.name : '';
+    const on = st.list.filter((e) => e.on);
+    const mine = on.filter((e) => e.game);
+    $('emoSummary').textContent = st.list.length + ' emotes, ' + on.length + ' switched on' +
+      (gameName ? ' · ' + (mine.length ? mine.length + ' starred for ' + gameName : 'none starred for ' + gameName + ' yet') : '');
+    const strip = $('emoStrip');
+    strip.innerHTML = '';
+    for (const e of (mine.length ? mine : on).slice(0, 14)) {
+      const i = document.createElement('img'); i.src = e.url; i.title = e.name; strip.appendChild(i);
+    }
+    renderEmoteGrid();
+    if (lastBttv) showBttv(lastBttv);
+  }
+  function renderEmoteGrid() {
+    const g = emo.game;
+    const filters = [['all', 'All'], ['on', 'On'], ['off', 'Off']];
+    if (g.taggable) filters.push(['game', '★ ' + g.name]);
+    if (!filters.some(([k]) => k === emoFilter)) emoFilter = 'all';
+    $('emoFilters').innerHTML = '';
+    for (const [k, label] of filters) {
+      const b = document.createElement('button');
+      b.className = 'chip' + (k === emoFilter ? ' on' : '');
+      b.textContent = label;
+      b.onclick = () => { emoFilter = k; renderEmoteGrid(); };
+      $('emoFilters').appendChild(b);
+    }
+    $('emoHeadNote').textContent = g.taggable ? 'Playing: ' + g.name : '';
+    $('emoHelp').textContent = 'Click an emote to switch it on or off. Chat never uses emotes that are off.' +
+      (g.taggable ? ' ★ = use it more while playing ' + g.name + '.' : ' Pick a game with a pack to star game emotes.');
+    const q = $('emoSearch').value.trim().toLowerCase();
+    const grid = $('emoGrid');
+    grid.innerHTML = '';
+    const shown = emo.list.filter((e) =>
+      (emoFilter === 'all' || (emoFilter === 'on' && e.on) || (emoFilter === 'off' && !e.on) || (emoFilter === 'game' && e.game)) &&
+      (!q || e.name.toLowerCase().includes(q)));
+    for (const e of shown) {
+      const t = document.createElement('div');
+      t.className = 'etile' + (e.on ? '' : ' off');
+      t.title = e.on ? 'On: click to switch off' : 'Off: click to switch on';
+      t.innerHTML = '<img alt=""><span class="nm"></span><button class="star">★</button>';
+      t.querySelector('img').src = e.url;
+      t.querySelector('.nm').textContent = e.name;
+      const star = t.querySelector('.star');
+      star.disabled = !g.taggable;
+      star.classList.toggle('on', e.game);
+      star.title = e.game ? 'Starred for ' + g.name + ': click to unstar' : 'Use more while playing ' + g.name;
+      star.onclick = (ev) => { ev.stopPropagation(); sendMsg({ type: 'emoteGame', name: e.name, on: !e.game }); };
+      t.onclick = () => sendMsg({ type: 'emoteSet', name: e.name, on: !e.on });
+      grid.appendChild(t);
+    }
+    if (!shown.length) grid.innerHTML = '<div class="note">Nothing here.</div>';
+    // BTTV side: suggested searches for this game
+    $('bttvForGameText').textContent = g.taggable ? 'Also star new emotes for ' + g.name : 'New emotes go into your collection';
+    $('bttvForGame').disabled = !g.taggable;
+    const chips = $('bttvChips');
+    chips.innerHTML = '';
+    for (const term of g.search || []) {
+      const b = document.createElement('button');
+      b.className = 'chip'; b.textContent = term;
+      b.onclick = () => { $('bttvQuery').value = term; searchBttv(); };
+      chips.appendChild(b);
+    }
+  }
+  function searchBttv() {
+    const q = $('bttvQuery').value.trim();
+    if (!q) return;
+    lastBttv = null;
+    $('bttvStatus').textContent = 'Searching BetterTTV for "' + q + '"…';
+    $('bttvGrid').innerHTML = '';
+    sendMsg({ type: 'bttvSearch', query: q });
+  }
+  function showBttv(m) {
+    lastBttv = m;
+    const have = new Set(emo.list.map((e) => e.name.toLowerCase()));
+    if (!$('bttvStatus').dataset.sticky) {
+      $('bttvStatus').textContent = m.error ? m.error
+        : m.results.length ? m.results.length + ' results for "' + m.query + '". Animated ones animate on stream too.'
+        : 'No results for "' + m.query + '".';
+    }
+    const grid = $('bttvGrid');
+    grid.innerHTML = '';
+    for (const r of m.results) {
+      const t = document.createElement('div');
+      t.className = 'etile';
+      t.style.cursor = 'default';
+      t.innerHTML = '<img alt="" loading="lazy"><span class="nm"></span><button class="add"></button>';
+      t.querySelector('img').src = 'https://cdn.betterttv.net/emote/' + r.id + '/2x';
+      t.querySelector('.nm').textContent = r.code;
+      const b = t.querySelector('.add');
+      if (have.has(r.code.toLowerCase())) {
+        b.textContent = 'Have it'; b.className = 'add done'; b.disabled = true;
+        b.title = 'You already have an emote called ' + r.code;
+      } else if (adding.has(r.id)) {
+        b.textContent = 'Adding…'; b.disabled = true;
+      } else {
+        b.textContent = '+ Add';
+        b.onclick = () => {
+          adding.add(r.id);
+          b.textContent = 'Adding…'; b.disabled = true;
+          sendMsg({ type: 'emoteAdd', id: r.id, code: r.code, forGame: $('bttvForGame').checked && !!emo.game.taggable });
+        };
+      }
+      grid.appendChild(t);
+    }
+  }
+  function emoteAdded(m) {
+    adding.delete(m.id);
+    const st = $('bttvStatus');
+    st.textContent = m.ok ? 'Added ' + m.code + '. Chat can use it right away.' : 'Could not add ' + m.code + ': ' + m.error;
+    st.dataset.sticky = '1';
+    setTimeout(() => { delete st.dataset.sticky; }, 4000);
+    if (lastBttv) showBttv(lastBttv);
+  }
+  $('emoOpen').onclick = () => { renderEmoteGrid(); $('emoModal').classList.add('show'); };
+  $('emoClose').onclick = () => $('emoModal').classList.remove('show');
+  $('emoModal').onclick = (e) => { if (e.target === $('emoModal')) $('emoModal').classList.remove('show'); };
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('emoModal').classList.remove('show'); });
+  $('emoSearch').oninput = renderEmoteGrid;
+  $('bttvGo').onclick = searchBttv;
+  $('bttvQuery').onkeydown = (e) => { if (e.key === 'Enter') searchBttv(); };
 
   // ------------------------------------------------------------ settings
   // patches from several controls are merged and sent together, so quickly

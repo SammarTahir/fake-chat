@@ -166,6 +166,24 @@ Existing files are never overwritten, so it is safe to re-run and to mix with
 your own emote files. Emote artwork belongs to its respective creators and is
 downloaded for local use only — that is why it is not committed here.
 
+### Managing emotes in the app
+
+**Emotes → Manage emotes & find more** opens the emote manager:
+
+- **Switch emotes on or off** by clicking them. Chat and the AI never use
+  emotes that are off (saved in `config.json` → `emotes.disabled`).
+- **Star emotes for the current game** (★). Starred emotes are used much more
+  while that game is selected and are offered to the AI first — e.g. GOAL and
+  SIUUUU for FC 27, Nuke and CLUTCH for MW4. Stars are saved per game in
+  `games.json`.
+- **Find more on BetterTTV**: each game suggests searches (goal, siuu, messi…
+  / nuke, sniper, clutch…), or search for anything. **+ Add** downloads the
+  emote into `emotes/` and (optionally) stars it for the current game — chat
+  can use it immediately.
+
+Emote names must be unique ignoring case (Windows filenames), so once you
+have a `GOAL`, other `Goal` results show **Have it**.
+
 ## Notes
 
 - The overlay caps its DOM at `maxMessages` + a small buffer and removes
