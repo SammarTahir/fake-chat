@@ -32,6 +32,7 @@ const ROOT = __dirname;
 const CONFIG_PATH = path.join(ROOT, 'config.json');
 const PERSONAS_PATH = path.join(ROOT, 'personas.json');
 const AMBIENT_PATH = path.join(ROOT, 'ambient.json');
+const GAMES_PATH = path.join(ROOT, 'games.json');
 const EMOTES_DIR = path.join(ROOT, 'emotes');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
@@ -82,6 +83,7 @@ const DEFAULTS = {
     temperature: 0.9,
   },
   personas: { count: 60 },
+  stream: { game: '', notes: '' },
 };
 
 function deepMerge(base, over) {
@@ -188,9 +190,12 @@ function serializeConfig(c) {
     "model": "${c.ollama.model}",
     // Hard timeout per generation; on timeout the cycle is skipped silently.
     "timeoutMs": ${c.ollama.timeoutMs},
-    // How often to send recent transcript to the LLM (seconds).
+    // The AI reacts right after you finish a sentence; this is the minimum gap
+    // between AI batches (seconds). Higher = less GPU use. Nothing you say is
+    // dropped — speech during the gap goes into the next batch.
     "reactiveIntervalSec": ${c.ollama.reactiveIntervalSec},
-    // How much recent transcript to include (seconds).
+    // When a new line is very short ("no way"), how far back to include
+    // earlier speech as context (seconds).
     "transcriptWindowSec": ${c.ollama.transcriptWindowSec},
     // Max comments kept per LLM call.
     "maxPerCycle": ${c.ollama.maxPerCycle},
@@ -200,6 +205,14 @@ function serializeConfig(c) {
   "personas": {
     // Roster size generated into personas.json on first run.
     "count": ${c.personas.count}
+  },
+
+  "stream": {
+    // What you're playing, typed however you like ("fc 27", "mw4", "cod").
+    // Matching a pack in games.json loads that game's knowledge for the AI.
+    "game": ${JSON.stringify(c.stream.game)},
+    // Anything the AI should know right now, e.g. "Rivals div 3, team has Mbappe".
+    "notes": ${JSON.stringify(c.stream.notes)}
   }
 }
 `;
@@ -304,6 +317,42 @@ function loadAmbient() {
 }
 loadAmbient();
 
+// ================================================================ game packs
+// games.json: per-game knowledge for the AI prompt plus game-flavoured
+// background lines. The new titles came out after the model's training data,
+// so without a pack it has no idea what "The Grounds" or "Reactor J92" are.
+let gamePacks = { reactionEmotes: [], games: {} };
+function loadGames() {
+  try { gamePacks = JSON.parse(fs.readFileSync(GAMES_PATH, 'utf8')); }
+  catch (e) { console.warn('[games] could not parse games.json:', e.message); }
+}
+loadGames();
+
+const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+// match what the streamer typed ("fc 27", "MW4", "call of duty") to a pack;
+// unknown games still get their name passed to the AI via the general pack
+function activeGame() {
+  const typed = norm(cfg.stream.game);
+  const games = gamePacks.games || {};
+  for (const [key, g] of Object.entries(games)) {
+    const names = [key, g.name, ...(g.aliases || [])].map(norm);
+    if (names.includes(typed)) return { key, ...g, known: true };
+  }
+  const general = games.general || { name: 'Just Chatting', context: '', terms: [], chatLines: [] };
+  return typed
+    ? { key: null, ...general, name: cfg.stream.game.trim(), context: `The streamer is playing ${cfg.stream.game.trim()}.`, known: false }
+    : { key: 'general', ...general, known: false };
+}
+function gameSummary() {
+  const g = activeGame();
+  return { typed: cfg.stream.game, name: g.name, known: g.known, key: g.key };
+}
+function gameList() {
+  return Object.entries(gamePacks.games || {})
+    .filter(([key]) => key !== 'general')
+    .map(([key, g]) => ({ key, name: g.name }));
+}
+
 // ================================================================ emotes
 let emotes = new Map(); // name -> filename
 function scanEmotes() {
@@ -378,6 +427,8 @@ function controlInit() {
     personas: personas.map((p) => ({ name: p.name, color: p.color, tag: p.tag, badges: p.badges })),
     emotes: emoteNames(),
     models: state.models,
+    games: gameList(),
+    game: gameSummary(),
     running: state.running,
     appMode: APP_MODE,
     port: cfg.port,
@@ -412,7 +463,10 @@ function handleControlMsg(m) {
   switch (m.type) {
     case 'transcript':
       if (typeof m.text === 'string' && m.text.trim()) {
-        state.transcript.push({ t: Date.now(), text: m.text.trim() });
+        const t = Date.now();
+        state.transcript.push({ t, text: m.text.trim() });
+        state.lastSpeechAt = t;
+        if (!state.speechPendingSince) state.speechPendingSince = t;
         if (state.transcript.length > 200) state.transcript.splice(0, 100);
       }
       break;
@@ -453,6 +507,7 @@ function setRunning(on) {
     state.reactiveQueue.length = 0;
     state.train = null;
     state.transcript.length = 0;
+    state.speechPendingSince = 0;
   }
   console.log(`[chat] ${on ? 'started' : 'stopped'}`);
   toControls({ type: 'run', on });
@@ -513,6 +568,10 @@ const state = {
   slowUntil: 0,
   ollama: 'unknown',        // unknown | down | missing | loading | ready
   llmBusy: false,
+  speechPendingSince: 0,    // first unanswered speech since the last AI batch
+  lastSpeechAt: 0,
+  lastLlmAt: 0,
+  batchAt: 0,               // when the newest AI batch arrived
   running: !APP_MODE,       // chat on/off (Start/Stop in the app)
   models: [],               // installed Ollama models [{name, size}]
 };
@@ -578,6 +637,10 @@ function emoteOnlyText(pool) {
   return Array(reps).fill(e).join(' ');
 }
 function cannedFor(p) {
+  // a third of background lines come from the active game's pack, so even the
+  // non-AI chat sounds like it's watching this game
+  const gameLines = activeGame().chatLines;
+  if (Array.isArray(gameLines) && gameLines.length && chance(0.33)) return pick(gameLines);
   const pools = [];
   const tagPool = ambient[p.tag];
   if (Array.isArray(tagPool) && tagPool.length && chance(0.55)) pools.push(tagPool);
@@ -638,7 +701,10 @@ function reactiveDripTick() {
     }
   } catch (e) { /* keep scheduling */ }
   // drain faster when the queue is deep, breathe when it's shallow
-  const gap = state.reactiveQueue.length > 8 ? rand(800, 1800) : rand(1400, 3600);
+  // a fresh batch lands in a quick burst, like real chat piling in right
+  // after something happens; then it eases off
+  const fresh = Date.now() - state.batchAt < 6000;
+  const gap = fresh ? rand(500, 1300) : state.reactiveQueue.length > 8 ? rand(800, 1800) : rand(1400, 3600);
   setTimeout(reactiveDripTick, gap);
 }
 
@@ -646,7 +712,10 @@ function reactiveDripTick() {
 // repeated keywords — real chat echoes itself constantly
 function scheduleEchoes(srcPersona, text) {
   const toks = String(text).split(/\s+/);
-  const words = toks.filter((w) => /^[a-zA-Z']{4,}$/.test(w) && !emotes.has(w));
+  // only echo words that carry meaning ("scripting", "mbappe"), never filler
+  // like "you'll" or "needs" which reads as a broken bot
+  const FILLER = /^(that|this|with|from|have|just|your|you'll|youre|you're|it's|its|dont|don't|what|when|then|them|they|their|there|need|needs|gonna|about|really|right|still|always|again|every|some|like|been|were|will|would|could|should|much|very|more|lol|lmao)$/i;
+  const words = toks.filter((w) => /^[a-zA-Z]{5,}$/.test(w) && !emotes.has(w) && !FILLER.test(w));
   const emoteToks = toks.filter((w) => emotes.has(w));
   const used = new Set([srcPersona.name]);
   let delay = 0;
@@ -822,18 +891,32 @@ async function warmModel() {
   } catch (e) { return false; }
 }
 
-function llmSystemPrompt() {
-  const names = emoteNames().join(', ');
-  return `You write fake Twitch chat messages reacting to what a streamer just said out loud.
-Return ONLY a JSON array of 10 to 14 strings. No other text, no markdown.
-Rules for every message:
-- max 8 words, most should be under 5
-- casual twitch chat slang, mostly lowercase, sloppy punctuation is good
-- never formal, never full grammatical sentences, never assistant-speak
-- no hashtags, no emoji, no markdown
-- react specifically to what was said when possible
-- you may use these emote codes as standalone words (case sensitive): ${names}
-Example output: ["no way he said that","KEKW","actually cooking rn","wait fr?","W take"]`;
+// Handing a 4B model all 55 emote names made half of every batch bare emotes
+// and almost nothing about what was said (measured: 52% emote-only, 13% on
+// topic). So: tell it the game, give it the game's vocabulary, offer only a
+// short emote list, and show one worked example as a prior turn, which small
+// models copy far more reliably than written rules.
+function reactionEmotes() {
+  const listed = (gamePacks.reactionEmotes || []).filter((e) => emotes.has(e));
+  return (listed.length >= 4 ? listed : emoteNames()).slice(0, 12);
+}
+function llmMessages(said) {
+  const g = activeGame();
+  const notes = String(cfg.stream.notes || '').trim();
+  const asUser = (t) => `The streamer just said: "${t}"`;
+  const system = `You are the live chat of a small Twitch stream. The streamer is playing ${g.name}.
+${g.context || ''}${notes ? '\nRight now: ' + notes : ''}
+${g.terms && g.terms.length ? 'Words viewers use: ' + g.terms.join(', ') + '.' : ''}
+
+You get what the streamer just said out loud. Write 10 chat messages, each from a different viewer, reacting to THAT.
+Every message must respond to what was said: answer their question, give advice or backseat, hype it, roast it, doubt it, joke about it, ask a follow-up, or repeat a detail they mentioned.
+Style: mostly lowercase, 2 to 7 words, twitch slang, typos are fine. No emoji, no hashtags, no full formal sentences.
+At most 2 of the 10 may be a single emote, and only from: ${reactionEmotes().join(', ')}.
+Reply as JSON: {"messages": ["...", "..."]}`;
+  const shot = g.example && g.example.said && Array.isArray(g.example.chat)
+    ? [{ role: 'user', content: asUser(g.example.said) }, { role: 'assistant', content: JSON.stringify({ messages: g.example.chat }) }]
+    : [];
+  return [{ role: 'system', content: system }, ...shot, { role: 'user', content: asUser(said) }];
 }
 
 function salvageLLM(content) {
@@ -866,10 +949,20 @@ function salvageLLM(content) {
     const quoted = [...content.matchAll(/"([^"\n]{1,60})"/g)].map((m) => m[1]);
     items = quoted.length ? quoted : content.split('\n');
   }
+  // models write "pepeHands" / "CatJAM" for PepeHands / catJAM — fix the case
+  // so they render as emotes. Only tokens with a capital letter: lowercase
+  // "cooked" or "vibe" are ordinary words that happen to match an emote name.
+  const byLower = new Map(emoteNames().map((n) => [n.toLowerCase(), n]));
+  const fixEmoteCase = (s) => s.split(' ')
+    .map((t) => (/[A-Z]/.test(t) && byLower.get(t.toLowerCase())) || t)
+    .join(' ');
+  const isEmoteOnly = (s) => s.split(' ').every((t) => emotes.has(t));
+  let emoteOnlyLeft = 2; // background chat already carries plenty of emotes
   const out = [];
   for (let raw of items) {
     if (typeof raw !== 'string') continue;
-    let s = raw.replace(/[*_`#>\[\]]/g, '').replace(/\s+/g, ' ').trim();
+    let s = fixEmoteCase(raw.replace(/[*_`#>\[\]]/g, '').replace(/\s+/g, ' ').trim());
+    if (isEmoteOnly(s) && emoteOnlyLeft-- <= 0) continue;
     s = s.replace(/[\s\-–—]+$/, '').replace(/([.!?]){2,}$/, '$1'); // trailing dash/punct junk
     if (!s || s.length > 70) continue;
     if (/as an ai|i cannot|great point|here (are|is)|json|assistant|keep at it|good luck|you got this|proud of you/i.test(s)) continue;
@@ -885,19 +978,32 @@ function salvageLLM(content) {
   return out;
 }
 
-// each cycle fires two staggered generations for volume; the second lands
-// half an interval later with whatever transcript is freshest by then
-function reactiveCycle() {
-  llmCallOnce();
-  setTimeout(llmCallOnce, Math.max(2, cfg.ollama.reactiveIntervalSec / 2) * 1000);
+// The AI reacts to speech, not to a clock. A fixed timer meant that with a
+// 21s interval and a 15s transcript window, anything said early in the gap
+// aged out before the next tick and was never sent at all. Now: once a
+// sentence has settled (or every 4s of continuous talking), send everything
+// said since the last batch. reactiveIntervalSec is only a cooldown that
+// caps GPU use.
+function tryReact() {
+  if (!state.running || state.llmBusy || state.ollama !== 'ready' || !state.speechPendingSince) return;
+  const now = Date.now();
+  const settled = now - state.lastSpeechAt > 1000 || now - state.speechPendingSince > 4000;
+  const cooledDown = now - state.lastLlmAt >= cfg.ollama.reactiveIntervalSec * 1000;
+  if (settled && cooledDown) llmCallOnce();
 }
 async function llmCallOnce() {
-  if (!state.running || state.llmBusy || state.ollama !== 'ready') return;
-  const windowMs = cfg.ollama.transcriptWindowSec * 1000;
   const now = Date.now();
-  const recent = state.transcript.filter((x) => now - x.t < windowMs).map((x) => x.text).join(' ').trim();
-  if (recent.length < 10) return;
+  const fresh = state.transcript.filter((x) => x.t >= state.speechPendingSince).map((x) => x.text);
+  // a short new line ("no way") gets the last few seconds before it as context
+  const context = fresh.join(' ').length < 40
+    ? state.transcript.filter((x) => x.t < state.speechPendingSince && now - x.t < cfg.ollama.transcriptWindowSec * 1000).map((x) => x.text)
+    : [];
+  const said = [...context, ...fresh].join(' ').trim();
+  state.speechPendingSince = 0; // speech arriving during the call starts the next batch
+  if (said.length < 10) return;
+  state.lastLlmAt = now;
   state.llmBusy = true;
+  const recent = said;
   try {
     const res = await fetch(cfg.ollama.url + '/api/chat', {
       method: 'POST',
@@ -912,10 +1018,7 @@ async function llmCallOnce() {
         // return nothing; non-thinking models ignore this
         think: false,
         options: { temperature: cfg.ollama.temperature, num_predict: 512 },
-        messages: [
-          { role: 'system', content: llmSystemPrompt() },
-          { role: 'user', content: `The streamer just said: "${recent.slice(-500)}"` },
-        ],
+        messages: llmMessages(recent.slice(-500)),
       }),
     });
     if (!res.ok) throw new Error('http ' + res.status);
@@ -924,31 +1027,33 @@ async function llmCallOnce() {
     const msgs = salvageLLM(content).slice(0, cfg.ollama.maxPerCycle);
     console.log(`[llm] ${Math.round((data.total_duration || 0) / 1e6)}ms, kept ${msgs.length}, queue ${state.reactiveQueue.length + msgs.length}` +
       (msgs.length < 3 ? ` | raw: ${content.slice(0, 160).replace(/\n/g, ' ')}` : ''));
+    // fresh reactions replace stale ones — a batch about something said a
+    // minute ago is worse than none (keep 2 so the old topic tails off)
+    if (msgs.length) {
+      state.reactiveQueue.splice(0, Math.max(0, state.reactiveQueue.length - 2));
+      state.reactiveQueue.unshift(...msgs);
+      state.batchAt = Date.now();
+    }
     for (const s of msgs) {
       state.recentLLM.push(s.toLowerCase());
       if (state.recentLLM.length > 40) state.recentLLM.shift();
-      if (state.reactiveQueue.length < 30) state.reactiveQueue.push(s);
     }
     if (msgs.length) toControls({ type: 'llm', queued: state.reactiveQueue.length, added: msgs });
   } catch (e) {
-    // timeout / error: skip silently, recheck availability soon
-    if (!/abort|timeout/i.test(String(e))) checkOllama();
+    // skip the cycle — never visible on stream, but always in the log
+    if (/abort|timeout/i.test(String(e))) console.log(`[llm] timed out after ${cfg.ollama.timeoutMs}ms, skipped`);
+    else { console.log('[llm] error: ' + (e && e.stack || e)); checkOllama(); }
   } finally {
     state.llmBusy = false;
   }
 }
-let reactiveTimer = null;
-function startReactiveTimer() {
-  if (reactiveTimer) clearInterval(reactiveTimer);
-  reactiveTimer = setInterval(reactiveCycle, Math.max(3, cfg.ollama.reactiveIntervalSec) * 1000);
-}
+setInterval(tryReact, 400);
 
 // ================================================================ config hot reload
 function applyRuntimeConfig() {
   startViewerTimer();
-  startReactiveTimer();
   toOverlays(overlayInit());
-  toControls({ type: 'config', config: cfg });
+  toControls({ type: 'config', config: cfg, game: gameSummary() });
 }
 fs.watchFile(CONFIG_PATH, { interval: 700 }, () => {
   if (Date.now() - lastSelfWrite < 1500) return;
@@ -957,6 +1062,11 @@ fs.watchFile(CONFIG_PATH, { interval: 700 }, () => {
   applyRuntimeConfig();
 });
 fs.watchFile(AMBIENT_PATH, { interval: 2000 }, () => { loadAmbient(); console.log('[ambient] reloaded'); });
+fs.watchFile(GAMES_PATH, { interval: 2000 }, () => {
+  loadGames();
+  console.log('[games] reloaded');
+  toControls({ type: 'games', games: gameList(), active: gameSummary() });
+});
 let emoteRescan = null;
 try {
   fs.watch(EMOTES_DIR, () => {
@@ -1018,7 +1128,6 @@ server.listen(cfg.port, () => {
   console.log(`  overlay demo (styling check):  http://localhost:${cfg.port}/overlay?demo`);
   console.log('');
   startViewerTimer();
-  startReactiveTimer();
   ambientTick();
   reactiveDripTick();
   joinTick();

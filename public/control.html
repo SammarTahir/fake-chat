@@ -95,6 +95,20 @@
   .field.wide { grid-template-columns: 150px 1fr; }
   .pair { display: flex; gap: 8px; align-items: center; }
   .pair input[type=number] { width: 78px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; }
+  .chip { border-radius: 999px; padding: 6px 13px; font-size: 13px; }
+  .chip.on { background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  #game { flex: 1; min-width: 0; }
+  .gamestat { font-size: 12.5px; margin: 8px 0 12px; color: var(--muted); }
+  .gamestat.ok { color: #8be0a8; }
+  .gamestat.warn { color: #f0cf75; }
+  .sublabel { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .sublabel span { font-size: 12px; }
+  textarea {
+    width: 100%; resize: vertical; min-height: 44px; font: inherit; color: inherit;
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
   .url { display: flex; gap: 8px; }
   .url input { flex: 1; min-width: 0; font-family: Consolas, monospace; font-size: 12.5px; }
 
@@ -166,6 +180,17 @@
 
   <div class="col">
     <div class="card">
+      <h2>What are you playing?</h2>
+      <div class="chips" id="gameChips"></div>
+      <div class="row" style="margin-top:9px">
+        <input type="text" id="game" list="gameNames" placeholder="type any game, e.g. FC 27, MW4, Fortnite" autocomplete="off">
+        <datalist id="gameNames"></datalist>
+      </div>
+      <div class="gamestat" id="gameStat"></div>
+      <label class="sublabel" for="notes">Right now <span>(optional — the AI reads this)</span></label>
+      <textarea id="notes" rows="2" placeholder="e.g. Rivals div 3, my team has Mbappe, trying to rank up"></textarea>
+    </div>
+    <div class="card">
       <h2>Settings <span style="text-transform:none;letter-spacing:0;font-weight:400">— saved automatically, applied live</span></h2>
 
       <div class="section">
@@ -182,9 +207,9 @@
 
       <div class="section">
         <h3>AI reactions</h3>
-        <div class="field"><label for="interval">React every</label>
+        <div class="field"><label for="interval">React at most every</label>
           <input type="range" id="interval" min="5" max="60" step="1"><span class="val" id="interval-v"></span></div>
-        <div class="note" style="margin:-3px 0 0">Higher = less GPU use while gaming. 10s is plenty for a full chat.</div>
+        <div class="note" style="margin:-3px 0 0">Chat reacts right after you finish a sentence. This is the cooldown between AI batches: higher = less GPU use while gaming, and nothing you say gets skipped.</div>
       </div>
 
       <div class="section">
@@ -269,13 +294,16 @@
           applyConfig(m.config);
           fillPersonas(m.personas);
           fillModels(m.models);
+          fillGames(m.games);
+          setGame(m.game);
           setAi(m.status.ollama, m.status.model);
           setRun(m.running);
           setObs(m.overlays);
           $('obsUrl').value = 'http://localhost:' + m.port + '/overlay';
           $('vlive').textContent = 'now ' + m.status.viewers;
           break;
-        case 'config': applyConfig(m.config); break;
+        case 'config': applyConfig(m.config); if (m.game) setGame(m.game); break;
+        case 'games': fillGames(m.games); setGame(m.active); break;
         case 'run': setRun(m.on); break;
         case 'status': setAi(m.ollama, m.model); break;
         case 'models': fillModels(m.models); break;
@@ -345,6 +373,35 @@
   $('model').onchange = () => { if ($('model').value) queuePatch({ ollama: { model: $('model').value } }, 0); };
   $('modelsRefresh').onclick = () => sendMsg({ type: 'models' });
 
+  // ------------------------------------------------------------ what are you playing
+  let gameNames = [];
+  function fillGames(list) {
+    gameNames = list;
+    const chips = $('gameChips');
+    chips.innerHTML = '';
+    for (const g of [{ key: 'general', name: 'Just Chatting' }, ...list]) {
+      const b = document.createElement('button');
+      b.className = 'chip';
+      b.textContent = g.name;
+      b.dataset.key = g.key;
+      b.dataset.name = g.key === 'general' ? '' : g.name;
+      b.onclick = () => { $('game').value = b.dataset.name; queuePatch({ stream: { game: b.dataset.name } }, 0); };
+      chips.appendChild(b);
+    }
+    $('gameNames').innerHTML = list.map((g) => `<option value="${g.name.replace(/"/g, '&quot;')}">`).join('');
+  }
+  function setGame(s) {
+    if (!editing('game')) $('game').value = s.typed || '';
+    for (const b of $('gameChips').children) b.classList.toggle('on', b.dataset.key === s.key);
+    const st = $('gameStat');
+    if (s.key === 'general') { st.className = 'gamestat'; st.textContent = 'Just chatting. Pick a game so chat talks about it.'; }
+    else if (s.known) { st.className = 'gamestat ok'; st.textContent = '✓ ' + s.name + ' loaded. The AI knows the game\'s modes, lingo and how its chat talks.'; }
+    else if (s.typed) { st.className = 'gamestat warn'; st.textContent = 'No knowledge pack for "' + s.typed + '" yet. The AI gets the name only, so reactions stay more general. Packs live in games.json.'; }
+    else { st.className = 'gamestat'; st.textContent = 'Just chatting. Pick a game so chat talks about it.'; }
+  }
+  $('game').oninput = () => queuePatch({ stream: { game: $('game').value.trim() } }, 700);
+  $('notes').oninput = () => queuePatch({ stream: { notes: $('notes').value.trim() } }, 700);
+
   // ------------------------------------------------------------ settings
   // patches from several controls are merged and sent together, so quickly
   // adjusting two sliders never drops the first change
@@ -389,6 +446,7 @@
     $('anchor').value = c.overlay.anchor;
     if (!editing('marginX')) $('marginX').value = c.overlay.margin[0];
     if (!editing('marginY')) $('marginY').value = c.overlay.margin[1];
+    if (!editing('notes')) $('notes').value = c.stream.notes || '';
     $('vshow').checked = c.viewers.enabled;
     $('vcorner').value = c.viewers.corner;
     if (!editing('vcount')) $('vcount').value = c.viewers.start;
