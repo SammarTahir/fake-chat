@@ -242,6 +242,11 @@
 
       <div class="section">
         <h3>Chat</h3>
+        <div class="field wide"><label for="talkOnly">Only chat when I'm talking</label>
+          <div><input type="checkbox" id="talkOnly"></div></div>
+        <div class="field"><label for="quietAfter">Go quiet after</label>
+          <input type="range" id="quietAfter" min="5" max="60" step="1"><span class="val" id="quietAfter-v"></span></div>
+        <div class="note" style="margin:-3px 0 10px">When on, chat stops this long after you stop speaking and picks up again when you talk. Needs the mic on.</div>
         <div class="field"><label for="mpm">Background messages / min</label>
           <input type="range" id="mpm" min="0" max="150" step="1"><span class="val" id="mpm-v"></span></div>
         <div class="field"><label for="emoteOnly">Emote-only messages</label>
@@ -512,6 +517,7 @@
   }
   $('game').oninput = () => queuePatch({ stream: { game: $('game').value.trim() } }, 700);
   $('notes').oninput = () => queuePatch({ stream: { notes: $('notes').value.trim() } }, 700);
+  $('talkOnly').onchange = () => queuePatch({ chat: { onlyWhenTalking: $('talkOnly').checked } }, 0);
   $('identity').oninput = () => queuePatch({ compliments: { identity: $('identity').value.trim() } }, 700);
 
   // ------------------------------------------------------------ emotes
@@ -661,6 +667,7 @@
   // [id, read from config, write patch, label formatter]
   const pct = (v) => v + '%';
   const SLIDERS = [
+    ['quietAfter', (c) => c.chat.quietAfterSec, (v) => ({ chat: { quietAfterSec: v } }), (v) => v + 's'],
     ['mpm', (c) => c.chat.messagesPerMinute, (v) => ({ chat: { messagesPerMinute: v } }), (v) => v],
     ['emoteOnly', (c) => Math.round(c.chat.emoteOnlyShare * 100), (v) => ({ chat: { emoteOnlyShare: v / 100 } }), pct],
     ['train', (c) => Math.round(c.chat.emoteTrainChance * 100), (v) => ({ chat: { emoteTrainChance: v / 100 } }), pct],
@@ -688,6 +695,7 @@
     if (!editing('marginY')) $('marginY').value = c.overlay.margin[1];
     if (!editing('notes')) $('notes').value = c.stream.notes || '';
     if (!editing('identity')) $('identity').value = c.compliments.identity || '';
+    $('talkOnly').checked = !!c.chat.onlyWhenTalking;
     $('vshow').checked = c.viewers.enabled;
     $('vcorner').value = c.viewers.corner;
     if (!editing('vcount')) $('vcount').value = c.viewers.start;

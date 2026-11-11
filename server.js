@@ -68,6 +68,7 @@ const DEFAULTS = {
     emoteTrainChance: 0.3, emoteTrainLength: [2, 6],
     appendEmoteChance: 0.18, typoChance: 0.06, maxWords: 8,
     reactiveEchoChance: 0.6,
+    onlyWhenTalking: false, quietAfterSec: 20,
   },
   joins: { eventsPerMinute: 1.5, joinerChatsChance: 0.4, joinerChatDelaySec: [4, 20] },
   viewers: {
@@ -139,6 +140,11 @@ function serializeConfig(c) {
     // After an LLM comment posts, chance other chatters "echo" it
     // (@mentions, repeated emotes, repeated keywords) over the next few seconds.
     "reactiveEchoChance": ${c.chat.reactiveEchoChance},
+    // true = chat only moves while you are talking: background messages and
+    // join/leave lines stop quietAfterSec seconds after you last spoke, and
+    // start again when you speak. AI reactions are unaffected.
+    "onlyWhenTalking": ${c.chat.onlyWhenTalking},
+    "quietAfterSec": ${c.chat.quietAfterSec},
     // Hard word cap enforced on every message (LLM output included).
     "maxWords": ${c.chat.maxWords}
   },
@@ -793,8 +799,14 @@ function ambientTick() {
   try { produceMessage(); } catch (e) { console.warn('[ambient]', e.message); }
   setTimeout(ambientTick, nextGap());
 }
+// "only when I'm talking" mode: background chat goes quiet a while after
+// the streamer stops speaking
+function chatIsQuiet() {
+  return cfg.chat.onlyWhenTalking && Date.now() - state.lastSpeechAt > cfg.chat.quietAfterSec * 1000;
+}
 function produceMessage() {
   if (!state.running || (overlays.size === 0 && controls.size === 0)) return; // stopped / nobody watching
+  if (chatIsQuiet()) return;
   // 1. emote train in progress
   if (state.train) {
     const tr = state.train;
@@ -828,6 +840,7 @@ function produceMessage() {
 // density — lowering messagesPerMinute never throttles AI comments.
 function reactiveDripTick() {
   try {
+    if (chatIsQuiet()) state.reactiveQueue.length = 0; // quiet mode: no stragglers
     if (state.reactiveQueue.length && (overlays.size || controls.size)) {
       const text = state.reactiveQueue.shift();
       const p = pickPersona();
@@ -853,6 +866,7 @@ function scheduleEchoes(srcPersona, text) {
   for (let i = 0, n = randInt(1, 3); i < n; i++) {
     delay += rand(1200, 4200);
     setTimeout(() => {
+      if (chatIsQuiet()) return;
       const p = pickPersona(used);
       used.add(p.name);
       const r = Math.random();
@@ -868,7 +882,7 @@ function scheduleEchoes(srcPersona, text) {
 // ================================================================ join / leave
 function joinTick() {
   try {
-    if (state.running && (overlays.size || controls.size)) {
+    if (state.running && !chatIsQuiet() && (overlays.size || controls.size)) {
       if (chance(0.6)) {
         // join — roster persona or one-off name
         const name = chance(0.6) ? pickPersona().name : makeHandle();
