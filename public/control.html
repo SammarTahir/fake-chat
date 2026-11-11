@@ -201,7 +201,8 @@
         <button data-t="laugh">😂 Laugh</button>
         <button data-t="questions">❓ Questions</button>
         <button data-t="emote_spam">🌊 Emote spam</button>
-        <button data-t="slow" style="grid-column: 1 / -1">🐌 Slow down for 30s</button>
+        <button data-t="compliments">💜 Compliments</button>
+        <button data-t="slow">🐌 Slow 30s</button>
       </div>
     </div>
     <div class="card">
@@ -249,6 +250,11 @@
           <input type="range" id="train" min="0" max="100" step="1"><span class="val" id="train-v"></span></div>
         <div class="field"><label for="echo">Viewers echo AI lines</label>
           <input type="range" id="echo" min="0" max="100" step="1"><span class="val" id="echo-v"></span></div>
+        <div class="field"><label for="compl">Compliments for you</label>
+          <input type="range" id="compl" min="0" max="40" step="1"><span class="val" id="compl-v"></span></div>
+        <div class="field wide"><label for="identity">"Favourite ___ streamer"</label>
+          <input type="text" id="identity" placeholder="e.g. Pakistani (optional)"></div>
+        <div class="note" style="margin:-3px 0 0">How much of chat hypes you up: your looks, your vibe, being their favourite streamer. 0% = off.</div>
       </div>
 
       <div class="section">
@@ -394,6 +400,7 @@
         case 'models': fillModels(m.models); break;
         case 'clients': setObs(m.overlays); break;
         case 'viewers': $('vlive').textContent = 'now ' + m.n; break;
+        case 'aiHealth': aiHealth(m); break;
         case 'feed': addFeed(m); break;
         case 'feed_sys': addFeedLine('sys', m.text); break;
         case 'llm': addFeedLine('llm', 'AI queued ' + m.added.length + ': ' + m.added.join(' | ')); break;
@@ -426,6 +433,25 @@
     const [cls, text, tip] = AI[st] || AI.unknown;
     setPill('aiDot', cls, 'aiText', text);
     $('aiText').parentElement.title = st === 'missing' ? 'Run in a terminal:  ollama pull ' + model : tip;
+  }
+  // live AI health: a game hogging the GPU makes the AI slow or silent, and
+  // that should be visible here instead of only in a log file
+  let aiFails = 0;
+  function aiHealth(m) {
+    aiFails = m.ok ? 0 : aiFails + 1;
+    const pill = $('aiText').parentElement;
+    if (m.ok && !m.timedOut) {
+      setPill('aiDot', 'ok', 'aiText', 'AI ready · ' + (m.firstMs / 1000).toFixed(1) + 's');
+      pill.title = 'Last reaction started after ' + (m.firstMs / 1000).toFixed(1) + 's';
+    } else if (m.ok) {
+      setPill('aiDot', 'warn', 'aiText', 'AI slow (GPU busy)');
+      pill.title = 'The AI only finished part of its last batch before the time limit.';
+    } else if (aiFails >= 2) {
+      setPill('aiDot', 'bad', 'aiText', 'AI too slow: GPU busy');
+      pill.title = 'The last ' + aiFails + ' AI reactions timed out, so chat is background lines only.' +
+        (m.gpuPct != null && m.gpuPct < 100 ? ' Only ' + m.gpuPct + '% of the model fits on the GPU right now; the game is using the video memory.' : '') +
+        ' Lower the game\'s graphics/texture settings or pick a smaller model.';
+    }
   }
   function setObs(n) {
     setPill('obsDot', n ? 'ok' : '', 'obsText', n ? 'OBS: connected' : 'OBS: not connected');
@@ -486,6 +512,7 @@
   }
   $('game').oninput = () => queuePatch({ stream: { game: $('game').value.trim() } }, 700);
   $('notes').oninput = () => queuePatch({ stream: { notes: $('notes').value.trim() } }, 700);
+  $('identity').oninput = () => queuePatch({ compliments: { identity: $('identity').value.trim() } }, 700);
 
   // ------------------------------------------------------------ emotes
   let emo = { list: [], game: {} }, emoFilter = 'all', lastBttv = null;
@@ -638,6 +665,7 @@
     ['emoteOnly', (c) => Math.round(c.chat.emoteOnlyShare * 100), (v) => ({ chat: { emoteOnlyShare: v / 100 } }), pct],
     ['train', (c) => Math.round(c.chat.emoteTrainChance * 100), (v) => ({ chat: { emoteTrainChance: v / 100 } }), pct],
     ['echo', (c) => Math.round(c.chat.reactiveEchoChance * 100), (v) => ({ chat: { reactiveEchoChance: v / 100 } }), pct],
+    ['compl', (c) => Math.round(c.compliments.share * 100), (v) => ({ compliments: { share: v / 100 } }), (v) => (v ? v + '%' : 'off')],
     ['interval', (c) => c.ollama.reactiveIntervalSec, (v) => ({ ollama: { reactiveIntervalSec: v } }), (v) => v + 's'],
     ['width', (c) => c.overlay.width, (v) => ({ overlay: { width: v } }), (v) => v],
     ['height', (c) => c.overlay.height, (v) => ({ overlay: { height: v } }), (v) => v],
@@ -659,6 +687,7 @@
     if (!editing('marginX')) $('marginX').value = c.overlay.margin[0];
     if (!editing('marginY')) $('marginY').value = c.overlay.margin[1];
     if (!editing('notes')) $('notes').value = c.stream.notes || '';
+    if (!editing('identity')) $('identity').value = c.compliments.identity || '';
     $('vshow').checked = c.viewers.enabled;
     $('vcorner').value = c.viewers.corner;
     if (!editing('vcount')) $('vcount').value = c.viewers.start;
