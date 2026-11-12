@@ -184,6 +184,7 @@
   <span class="pill" title="OBS browser sources currently showing the overlay"><span class="dot" id="obsDot"></span><span id="obsText">OBS: –</span></span>
   <button id="micBtn" class="btn-mic">🎤 Mic off</button>
   <button id="runBtn" class="btn-run" disabled>▶ Start chat</button>
+  <button id="reportBtn" title="Copy a short health report of this session (AI success rate, speed, GPU, errors) to paste to whoever is helping you">📋 Copy report</button>
   <button id="quitBtn" class="btn-quit" title="Stop everything and close Fake Chat">⏻ Quit</button>
 </div>
 
@@ -718,6 +719,16 @@
 
   // ------------------------------------------------------------ top bar actions
   $('runBtn').onclick = () => sendMsg({ type: 'run', on: !running });
+  $('reportBtn').onclick = async () => {
+    const b = $('reportBtn');
+    try {
+      const text = await (await fetch('/report')).text();
+      try { await navigator.clipboard.writeText(text); }
+      catch (e) { const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); }
+      b.textContent = '✓ Copied';
+    } catch (e) { b.textContent = 'Server not running'; }
+    setTimeout(() => { b.textContent = '📋 Copy report'; }, 2000);
+  };
   $('quitBtn').onclick = () => {
     if (!wsOpen) return showClosed();
     if (!confirm('Quit Fake Chat?\n\nChat stops, the OBS overlay goes blank and the AI model is unloaded from your GPU.')) return;

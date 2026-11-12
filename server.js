@@ -575,6 +575,7 @@ function handleControlMsg(m, ws) {
         const t = Date.now();
         state.transcript.push({ t, text: m.text.trim() });
         heardLog('HEARD  ' + m.text.trim());
+        stats.heard++;
         state.lastSpeechAt = t;
         if (!state.speechPendingSince) state.speechPendingSince = t;
         if (state.transcript.length > 200) state.transcript.splice(0, 100);
@@ -662,11 +663,68 @@ async function refreshModels() {
   toControls({ type: 'models', models: state.models });
 }
 
+// ---------------------------------------------------------------- session report
+// logs/report.txt: a short plain-text health summary of the current session,
+// rewritten after every AI call so it survives a crash. The app's "Copy
+// report" button copies the same text. logs/errors.log keeps unexpected errors.
+const stats = {
+  startedAt: Date.now(), heard: 0, calls: 0, full: 0, partial: 0, timeouts: 0, failed: 0,
+  firstMs: [], gpuMin: null, gpuLast: null, errors: [],
+};
+function noteError(where, e) {
+  const line = '[' + new Date().toLocaleString() + '] ' + where + ': ' + (e && e.stack || e);
+  stats.errors.push(line.split('\n')[0].slice(0, 200));
+  if (stats.errors.length > 20) stats.errors.shift();
+  try {
+    fs.mkdirSync(path.join(ROOT, 'logs'), { recursive: true });
+    fs.appendFileSync(path.join(ROOT, 'logs', 'errors.log'), line + '\n');
+  } catch (err) { /* nothing more we can do */ }
+}
+function buildReport() {
+  const mins = Math.round((Date.now() - stats.startedAt) / 60000);
+  const sorted = stats.firstMs.slice().sort((a, b) => a - b);
+  const median = sorted.length ? (sorted[Math.floor(sorted.length / 2)] / 1000).toFixed(1) + 's' : 'n/a';
+  const slowest = sorted.length ? (sorted[sorted.length - 1] / 1000).toFixed(1) + 's' : 'n/a';
+  const answered = stats.full + stats.partial;
+  let verdict = 'No AI calls yet (mic off, or nothing said).';
+  if (stats.calls) {
+    const rate = answered / stats.calls;
+    verdict = rate >= 0.9 ? 'AI healthy.' : rate >= 0.5 ? 'AI struggling: some reactions were lost.' : 'AI mostly failing: chat was background lines only.';
+    if (stats.gpuMin != null && stats.gpuMin < 100) verdict += ' The model did not fully fit on the GPU (lowest ' + stats.gpuMin + '%), so something else was using the video memory.';
+  }
+  const g = activeGame();
+  return [
+    'Fake Chat session report  ' + new Date().toLocaleString(),
+    'Session length: ' + mins + ' min   Model: ' + cfg.ollama.model + '   Ollama: ' + state.ollama,
+    'Game: ' + g.name + '   Background msgs/min: ' + cfg.chat.messagesPerMinute + '   Only when talking: ' + (cfg.chat.onlyWhenTalking ? 'on' : 'off'),
+    'React at most every: ' + cfg.ollama.reactiveIntervalSec + 's   AI time limit: ' + cfg.ollama.timeoutMs / 1000 + 's',
+    '',
+    'Mic lines heard: ' + stats.heard,
+    'AI calls: ' + stats.calls + '   full: ' + stats.full + '   partial: ' + stats.partial + '   timed out with nothing: ' + stats.timeouts + '   errors: ' + stats.failed,
+    'Time to first AI line: median ' + median + ', slowest ' + slowest,
+    'Model on GPU: last ' + (stats.gpuLast == null ? 'n/a' : stats.gpuLast + '%') + ', lowest ' + (stats.gpuMin == null ? 'n/a' : stats.gpuMin + '%'),
+    '',
+    'Verdict: ' + verdict,
+    '',
+    'Unexpected errors: ' + (stats.errors.length ? '' : 'none'),
+    ...stats.errors,
+  ].join('\n') + '\n';
+}
+function writeReport() {
+  try {
+    fs.mkdirSync(path.join(ROOT, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(ROOT, 'logs', 'report.txt'), buildReport());
+  } catch (e) { /* reporting must never break chat */ }
+}
+process.on('uncaughtException', (e) => { noteError('crash', e); writeReport(); process.exit(1); });
+process.on('unhandledRejection', (e) => { noteError('unhandled', e); });
+
 let shuttingDown = false;
 async function shutdown(reason) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[app] shutting down (${reason})`);
+  writeReport();
   state.running = false;
   toOverlays({ type: 'clear' });
   toControls({ type: 'bye' });
@@ -1163,6 +1221,8 @@ async function logPlacement(why) {
     const m = ((await r.json()).models || []).find((x) => x.name === cfg.ollama.model || x.model === cfg.ollama.model);
     if (!m || !m.size) return;
     state.gpuPct = Math.round(((m.size_vram || 0) / m.size) * 100);
+    stats.gpuLast = state.gpuPct;
+    stats.gpuMin = stats.gpuMin == null ? state.gpuPct : Math.min(stats.gpuMin, state.gpuPct);
     console.log(`[ollama] ${why}: model is ${state.gpuPct}% on the GPU` +
       (state.gpuPct < 100 ? ' — the rest runs on the CPU (slow); something else is using the video memory' : ''));
   } catch (e) { /* diagnostics only */ }
@@ -1252,10 +1312,17 @@ async function llmCallOnce() {
     state.llmBusy = false;
   }
   const ms = Date.now() - now;
+  stats.calls++;
+  if (failed) { stats.failed++; noteError('ai call', failed); }
+  else if (kept.length && !timedOut) stats.full++;
+  else if (kept.length) stats.partial++;
+  else if (timedOut) stats.timeouts++;
+  if (kept.length) { stats.firstMs.push(firstMs); if (stats.firstMs.length > 500) stats.firstMs.shift(); }
   if (failed) { console.log('[llm] error: ' + (failed.stack || failed)); checkOllama(); }
   else if (timedOut) console.log(`[llm] timed out after ${cfg.ollama.timeoutMs}ms, kept ${kept.length}${kept.length ? ' (partial)' : ''}`);
   else console.log(`[llm] ${ms}ms (first line ${firstMs}ms), kept ${kept.length}` + (kept.length < 3 ? ` | raw: ${content.slice(0, 160).replace(/\n/g, ' ')}` : ''));
-  if (timedOut) await logPlacement('after a timeout');
+  await logPlacement(timedOut ? 'after a timeout' : 'check'); // at most once a minute
+  writeReport();
   heardLog((kept.length ? 'CHAT   ' + kept.join(' | ') : 'CHAT   (no AI reply' + (timedOut ? ', timed out' : '') + ')') + '\n       reacting to: ' + said.slice(-200));
   if (kept.length) toControls({ type: 'llm', queued: state.reactiveQueue.length, added: kept });
   toControls({ type: 'aiHealth', ok: kept.length > 0, timedOut, ms, firstMs, gpuPct: state.gpuPct });
@@ -1320,6 +1387,7 @@ function handleHttp(req, res) {
   if (url === '/' || url === '/overlay') return serveFile(res, path.join(PUBLIC_DIR, 'overlay.html'));
   if (url === '/control' || url === '/app') return serveFile(res, path.join(PUBLIC_DIR, 'control.html'));
   if (url === '/icon.png') return serveFile(res, path.join(ROOT, 'assets', 'icon.png'));
+  if (url === '/report') { res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }); return res.end(buildReport()); }
   if (url === '/health') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
   if (url.startsWith('/emotes/')) {
     const name = path.basename(url); // no traversal
